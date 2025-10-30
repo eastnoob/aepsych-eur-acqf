@@ -13,6 +13,7 @@ EUR Acquisition Function (V4): forward-only, fresh Dt, space-canonicalized, vari
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
+import re
 
 import numpy as np
 import torch
@@ -60,22 +61,13 @@ class EURAcqfV4(AcquisitionFunction):
         self.gamma = gamma
         self.coverage_method = coverage_method
 
-        # 交互项解析（允许从分号分隔的字符串 "(0,1);(1,2)" 解析）
+        # 交互项解析：支持多种分隔方式
+        # 示例："(0,1);(1,2)" 或 "(0,1),(1,2)" 或 "[(0,1), (1,2)]"
         if isinstance(interaction_terms, str):
-            parsed: List[Tuple[int, int]] = []
-            for part in interaction_terms.replace(" ", "").split(";"):
-                if not part:
-                    continue
-                try:
-                    part = part.strip()
-                    if part.startswith("[") and part.endswith("]"):
-                        part = part[1:-1]
-                    if part.startswith("(") and part.endswith(")"):
-                        part = part[1:-1]
-                    i_s, j_s = part.split(",")
-                    parsed.append((int(i_s), int(j_s)))
-                except Exception:
-                    continue
+            s = interaction_terms.strip()
+            # 直接用正则提取所有形如 (i,j) 的片段，鲁棒处理分号/逗号/空格等分隔
+            pairs = re.findall(r"\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)", s)
+            parsed: List[Tuple[int, int]] = [(int(i), int(j)) for i, j in pairs]
             self.interaction_terms = parsed
         else:
             self.interaction_terms = (
