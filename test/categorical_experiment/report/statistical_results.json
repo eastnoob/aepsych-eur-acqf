@@ -1,0 +1,33 @@
+{
+  "coverage": {
+    "sampled_designs": 1,
+    "total_designs": 360,
+    "coverage_rate": 0.002777777777777778
+  },
+  "distribution": {
+    "ks_statistic": 0.2385869565217391,
+    "ks_pvalue": 0.12311076542682509,
+    "mann_whitney_u": 4620.0,
+    "mann_whitney_pvalue": 0.12335646205114285
+  },
+  "errors": {
+    "mean_error": -2.4079827540891956,
+    "mae": 2.4302879824400305,
+    "rmse": 2.6172296765234035,
+    "std": 1.0319013963706556
+  },
+  "information": {
+    "entropy_full": 2.7823076819037205,
+    "entropy_sampled": 2.585055115048594,
+    "cv_full": 0.13685261620343378,
+    "cv_sampled": 0.1193919539778027
+  },
+  "scores": {
+    "coverage_score": 0.002777777777777778,
+    "distribution_score": 0.7614130434782609,
+    "error_score": 0.9295500384494823,
+    "correlation_score": 0.7281711031861887,
+    "discovery_score": 0.08333333333333333,
+    "overall_score": 0.5010490592450086
+  }
+}

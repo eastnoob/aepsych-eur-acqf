@@ -1,0 +1,52 @@
+{
+  "timestamp": "20251029_230804",
+  "n_trials": 60,
+  "n_init": 20,
+  "n_opt": 40,
+  "subject_type": "nonlinear_interaction",
+  "subject_noise": 0.3,
+  "acqf_params": {
+    "lambda_min": 0.3,
+    "lambda_max": 2.5,
+    "tau_1": 0.6,
+    "tau_2": 0.2,
+    "gamma": 0.6,
+    "interaction_terms": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ]
+    ]
+  },
+  "parameter_names": [
+    "intensity",
+    "duration",
+    "noise_level"
+  ],
+  "bounds": [
+    [
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      1.0
+    ]
+  ],
+  "seed": 42,
+  "evaluation": {
+    "mse": 0.2260552803307601,
+    "mae": 0.4023816644320195,
+    "rmse": 0.4754527109300778,
+    "r2": 0.9331550753129368,
+    "correlation": 0.9758362224837296
+  }
+}
