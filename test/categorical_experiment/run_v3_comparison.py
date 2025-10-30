@@ -32,7 +32,7 @@ def generate_all_designs():
     layouts = ["grid", "list", "card", "timeline"]
     font_sizes = [12, 14, 16, 18, 20, 22]
     animations = ["none", "subtle", "dynamic"]
-    
+
     # 生成所有组合的索引表示
     for c in range(5):
         for l in range(4):
@@ -41,18 +41,19 @@ def generate_all_designs():
                     designs.append([c, l, f, a])
     return np.array(designs)
 
+
 def design_vector_to_dict(vector):
     """将设计向量转为字典"""
     color_schemes = ["blue", "green", "red", "purple", "orange"]
     layouts = ["grid", "list", "card", "timeline"]
     font_sizes = [12, 14, 16, 18, 20, 22]
     animations = ["none", "subtle", "dynamic"]
-    
+
     return {
         "color_scheme": color_schemes[int(vector[0])],
         "layout": layouts[int(vector[1])],
         "font_size": font_sizes[int(vector[2])],
-        "animation": animations[int(vector[3])]
+        "animation": animations[int(vector[3])],
     }
 
 
@@ -105,10 +106,10 @@ def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, see
     for idx in init_indices:
         x = all_designs[idx]
         design_dict = design_vector_to_dict(x)
-        
+
         # 虚拟用户评分
         rating_result = virtual_user.rate_design(design_dict)
-        response = rating_result['rating']
+        response = rating_result["rating"]
         true_score = virtual_user.get_ground_truth(design_dict)
 
         X_sampled.append(x)
@@ -142,7 +143,7 @@ def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, see
         # 虚拟用户响应
         design_dict = design_vector_to_dict(x_next)
         rating_result = virtual_user.rate_design(design_dict)
-        response = rating_result['rating']
+        response = rating_result["rating"]
         true_score = virtual_user.get_ground_truth(design_dict)
 
         # 记录

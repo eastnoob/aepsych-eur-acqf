@@ -1,0 +1,3 @@
+,method,config,n_trials,unique_designs,repeat_rate,mean_score,max_score,high_score_count,db_path
+V1,V1,experiment_config.ini,60,23,61.66666666666667,6.605685442534173,10.188175528528179,4,D:\WORKSPACE\python\aepsych-source\extensions\dynamic_eur_acquisition\test\categorical_experiment\results_v1_v3a\experiment_V1_20251030_105239.db
+V3A,V3A,experiment_config_v3a.ini,60,28,53.333333333333336,7.753953446260448,9.950496683266888,5,D:\WORKSPACE\python\aepsych-source\extensions\dynamic_eur_acquisition\test\categorical_experiment\results_v1_v3a\experiment_V3A_20251030_105342.db

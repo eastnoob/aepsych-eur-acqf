@@ -45,6 +45,7 @@ best_indices = np.argsort(scores)[-n:]  # 如果top-n都是-inf，仍会返回�
 ```
 
 **为什么会失败**:
+
 - 设置 `scores[i] = -np.inf` 不能保证跳过已采样设计
 - `np.argsort()` 会对所有scores排序，包括-inf
 - 如果请求10个设计，但top-10都已采样（都是-inf），会返回这10个重复设计
@@ -85,6 +86,7 @@ def select_next(self, X_candidates, n_select=1):
 ```
 
 **为什么能工作**:
+
 1. **显式过滤**: 主动构建未采样设计的布尔掩码
 2. **只对未采样排序**: 只从未采样池中选择top-n
 3. **自动降级**: 如果top-1已采样，自动选择未采样的top-2
@@ -116,6 +118,7 @@ def select_next(self, X_candidates, n_select=1):
 | **交互项覆盖** | 96.7% | 96.7% | **100%** |
 
 **关键发现**:
+
 - ✅ V3A和V3C都实现了0%重复率
 - ✅ V3C实现了完美交互项覆盖（100%）
 - ⚠️ V1在360设计空间也是0%重复（但在更小空间会出现重复）
@@ -130,6 +133,7 @@ def select_next(self, X_candidates, n_select=1):
 | **高分发现(≥9.5)** | 7 | 7 | 5 |
 
 **分析**:
+
 - V3C的标准差略低（1.11），表明采样更均匀
 - 所有方案都成功发现了最高分设计
 - 在360设计空间，exploration已很充分
@@ -137,6 +141,7 @@ def select_next(self, X_candidates, n_select=1):
 ### 硬排除日志验证
 
 **V3A (HardExclusionAcqf) 运行日志**:
+
 ```text
 Trial 21: [HardExclusionAcqf] 本轮硬排除 20/360 个已采样设计
 Trial 30: [HardExclusionAcqf] 本轮硬排除 29/360 个已采样设计
@@ -147,6 +152,7 @@ Trial 80: [HardExclusionAcqf] 本轮硬排除 79/360 个已采样设计
 **验证**: 硬排除数量 = 累计试验数 - 1（完美跟踪）
 
 **V3C (CombinedAcqf) 运行日志**:
+
 ```text
 Trial 21-80: [CombinedAcqf] 已记录 20-79 个唯一设计
 无重复采样日志
@@ -180,6 +186,7 @@ V3C选中: [9, 8] - 都是未采样设计 ✅
 **Commit Hash**: 5bf19b6  
 **Tag**: v3.1-validated  
 **Commit Message**:
+
 ```
 Fix V3 critical bug: implement proper skip logic + run experiments
 
@@ -234,6 +241,7 @@ User Requirement Met:
 | ✅ 采样更均匀 | 标准差1.11 vs 1.12 |
 
 **适用场景**:
+
 - 需要最大化交互效应估计精度
 - 计算资源允许
 - 追求最优性能
@@ -250,6 +258,7 @@ User Requirement Met:
 | ✅ 交互项覆盖96.7% | 已很优秀 |
 
 **适用场景**:
+
 - 需要快速部署验证
 - 倾向于保守策略
 - 360设计空间已足够
@@ -266,7 +275,7 @@ User Requirement Met:
 
 ### 短期计划
 
-1. **部署方案C**: 
+1. **部署方案C**:
    - 在真实实验中使用CombinedAcqf
    - 验证交互效应估计精度提升
 
@@ -292,6 +301,7 @@ User Requirement Met:
 ### 1. 显式过滤机制
 
 **对比**:
+
 - **V3.0 (被动)**: 设置scores=-inf，依赖排序自然排除
 - **V3.1 (主动)**: 构建布尔掩码，显式过滤未采样
 
@@ -300,6 +310,7 @@ User Requirement Met:
 ### 2. 次优自动降级
 
 **机制**:
+
 ```
 如果 top-1 已采样:
     自动选择 top-2 (未采样)
@@ -313,10 +324,12 @@ User Requirement Met:
 ### 3. 双层保护（V3C）
 
 **第一层**: 候选集预过滤
+
 - 过滤掉不满足多样性要求的候选
 - 减少候选集大小20%
 
 **第二层**: 硬排除
+
 - 跳过已采样设计
 - 保证0重复
 
@@ -327,6 +340,7 @@ User Requirement Met:
 ## 用户需求对齐
 
 ### 核心需求
+>
 > "确保最终采样点的数量==试次，每次可以采次优，但是不能跳过，直接把重复的删了"
 
 ### 实现验证

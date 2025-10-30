@@ -1,0 +1,30 @@
+{
+  "timestamp": "20251030_112722",
+  "user_type": "balanced",
+  "user_noise": 0.5,
+  "seed": 42,
+  "results": {
+    "V1": {
+      "method": "V1",
+      "config": "experiment_config.ini",
+      "n_trials": 60,
+      "unique_designs": 21,
+      "repeat_rate": 65.0,
+      "mean_score": 8.422735468849988,
+      "max_score": 9.607790865966589,
+      "high_score_count": 5,
+      "db_path": "d:\\WORKSPACE\\python\\aepsych-source\\extensions\\dynamic_eur_acquisition\\test\\categorical_experiment\\results_v1_v3a\\experiment_V1_20251030_112532.db"
+    },
+    "V3A": {
+      "method": "V3A",
+      "config": "experiment_config_v3a.ini",
+      "n_trials": 60,
+      "unique_designs": 21,
+      "repeat_rate": 65.0,
+      "mean_score": 7.365310193847235,
+      "max_score": 9.90779086596659,
+      "high_score_count": 4,
+      "db_path": "d:\\WORKSPACE\\python\\aepsych-source\\extensions\\dynamic_eur_acquisition\\test\\categorical_experiment\\results_v1_v3a\\experiment_V3A_20251030_112632.db"
+    }
+  }
+}

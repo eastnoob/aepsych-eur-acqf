@@ -5,6 +5,7 @@
 ✅ **V3开发已完成**，成功实现了针对V1重复采样问题的最小化改进方案。
 
 **核心成果**:
+
 - 两个V3方案（V3A和V3C）已实现、测试、文档化
 - 预期性能提升: 唯一设计数 +54-59%，参数方差 -28-32%
 - 保持V1的简单性: 2组件设计，11-12个参数
@@ -21,7 +22,8 @@
 
 > "从被试的回答中获取自变量对因变量的效应...提问次数有限...尽可能收集主效应和交互效应（尽可能所有，但条件可以放宽，主要是二级）...我对于被试可能采取的行动，也就是对统计模型没有任何预期"
 
-**实验类型**: 
+**实验类型**:
+
 - 自变量: 分类变量（4因子，360个设计空间）
 - 因变量: Likert量表（连续响应）
 - 预算: 80次试验
@@ -47,11 +49,13 @@ V3 (Current Solution) ✅
 ### 关键教训
 
 **来自V2的失败**:
+
 - ❌ 过度设计适得其反
 - ❌ 软惩罚(0.01×)效果不佳
 - ❌ 复杂度增加≠性能提升
 
 **V3的成功要素**:
+
 - ✅ 针对性解决问题（仅解决重复采样）
 - ✅ 硬约束(-inf)彻底有效
 - ✅ 保持简单可靠（最小化改动）
@@ -63,6 +67,7 @@ V3 (Current Solution) ✅
 ### 方案A: HardExclusionAcqf（硬排除）
 
 **核心改进**:
+
 ```python
 def _evaluate_numpy(self, X_candidates):
     # 使用V1的全部评分逻辑
@@ -77,6 +82,7 @@ def _evaluate_numpy(self, X_candidates):
 ```
 
 **特点**:
+
 - 代码改动: 仅10行
 - 参数数量: 11个（与V1相同）
 - 预期唯一设计: ~60 (+54%)
@@ -87,6 +93,7 @@ def _evaluate_numpy(self, X_candidates):
 ### 方案C: CombinedAcqf（组合方案）⭐推荐
 
 **核心改进**:
+
 ```python
 def filter_candidates(self, X_candidates):
     """候选集预过滤: 80%未采样 + 20%已采样"""
@@ -111,6 +118,7 @@ def _evaluate_numpy(self, X_candidates):
 ```
 
 **特点**:
+
 - 代码改动: 约20行
 - 参数数量: 12个（+1个candidate_unsampled_ratio）
 - 预期唯一设计: ~62 (+59%)
@@ -155,6 +163,7 @@ def _evaluate_numpy(self, X_candidates):
 #### 目标1: 主效应估计精度 ⭐⭐⭐⭐⭐
 
 **V3改进**:
+
 - ✅ 因子水平覆盖: 91% → 100% (+9%)
 - ✅ 更多独立样本: 39 → 60-62 (+54-59%)
 - ✅ 主效应参数方差: -20-30%
@@ -164,6 +173,7 @@ def _evaluate_numpy(self, X_candidates):
 #### 目标2: 交互效应估计精度 ⭐⭐⭐⭐⭐
 
 **V3改进**:
+
 - ✅ 交互项设计覆盖: 79% → 96% (+17%)
 - ✅ 交互效应参数方差: -25-35%
 
@@ -172,6 +182,7 @@ def _evaluate_numpy(self, X_candidates):
 #### 目标3: 有限试验效率 ⭐⭐⭐⭐⭐
 
 **V3改进**:
+
 - ✅ 信息利用率: +53-59%
 - ✅ 每次试验都带来新信息
 - ✅ 无浪费的重复采样
@@ -185,6 +196,7 @@ def _evaluate_numpy(self, X_candidates):
 ### 代码实现
 
 ✅ **acquisition_function_v3.py** (327 lines)
+
 - `HardExclusionAcqf`类 (76 lines)
 - `CombinedAcqf`类 (91 lines)  
 - `load_from_config`函数支持V3
@@ -193,11 +205,13 @@ def _evaluate_numpy(self, X_candidates):
 ### 配置文件
 
 ✅ **experiment_config_v3a.ini**
+
 - V3A (HardExclusionAcqf) 配置
 - 使用V1的11个参数
 - 即插即用
 
 ✅ **experiment_config_v3c.ini**
+
 - V3C (CombinedAcqf) 配置
 - V1参数 + candidate_unsampled_ratio
 - 推荐用于生产
@@ -205,6 +219,7 @@ def _evaluate_numpy(self, X_candidates):
 ### 文档
 
 ✅ **V3_IMPROVEMENT_REPORT.md** (600+ lines)
+
 - 完整的理论分析
 - 评估指标设计（基于用户目标）
 - V3 vs V1 vs V2全面对比
@@ -212,6 +227,7 @@ def _evaluate_numpy(self, X_candidates):
 - 方案选择建议
 
 ✅ **V3_QUICK_START.md** (680+ lines)
+
 - 快速部署指南
 - 参数配置说明
 - 实战示例
@@ -221,6 +237,7 @@ def _evaluate_numpy(self, X_candidates):
 ### 实验脚本
 
 ✅ **run_v3_comparison.py** (272 lines)
+
 - 简化实验框架（无需完整AEPsych）
 - V1 vs V3A vs V3C三方对比
 - 全面的评估指标
@@ -229,6 +246,7 @@ def _evaluate_numpy(self, X_candidates):
 ### Git提交
 
 ✅ **提交记录**:
+
 ```
 55feca9 (tag: v3.0-experimental) Add V3 acquisition functions
 041b5ff Add V3 Quick Start Guide
@@ -322,6 +340,7 @@ python run_experiment.py --config my_experiment.ini
 ### 参数兼容性验证 ✅
 
 **确认**: V3使用与V1完全相同的参数名称
+
 - ✅ lambda_min / lambda_max（不是lambda_main/lambda_inter）
 - ✅ tau_1 / tau_2（不是tau_main/tau_inter）
 - ✅ gamma（不是gamma_diversity）
@@ -342,6 +361,7 @@ python run_experiment.py --config my_experiment.ini
 ### 短期（1-2周）
 
 **高优先级**:
+
 1. ✅ **在真实实验中部署V3C**
    - 推荐使用V3C (CombinedAcqf)
    - 使用默认参数即可
@@ -360,6 +380,7 @@ python run_experiment.py --config my_experiment.ini
 ### 中期（1-2月）
 
 **优化方向**:
+
 1. ⏳ **参数微调**（如需要）
    - 根据实际数据调整tau_1, tau_2
    - 根据阶段调整candidate_unsampled_ratio
@@ -377,6 +398,7 @@ python run_experiment.py --config my_experiment.ini
 ### 长期（3月+）
 
 **研究方向**:
+
 1. ⏳ **V4探索**（如果V3仍有不足）
    - 可能方向: 自适应候选集比例
    - 可能方向: 基于模型不确定性的动态权重
@@ -401,12 +423,14 @@ python run_experiment.py --config my_experiment.ini
 **背景**: V2使用软惩罚(0.01×)失败
 
 **分析**:
+
 - 软惩罚(0.01×): 已采样设计仍可能被选中（如果基础得分很高）
 - 硬排除(-inf): 已采样设计绝对不会被选中
 
 **决策**: 硬排除(-inf)
 
 **理由**:
+
 1. 确定性: 100%避免重复，无模糊性
 2. 简单性: 易于理解和验证
 3. 有效性: V2证明软惩罚不够
@@ -416,12 +440,14 @@ python run_experiment.py --config my_experiment.ini
 **背景**: V3A已有硬排除，为何还需要预过滤？
 
 **分析**:
+
 - 仅硬排除: 候选集中仍包含所有已采样设计，需逐个评分后排除
 - 预过滤+硬排除: 从源头减少已采样设计在候选集中的比例
 
 **决策**: V3C采用双重保护
 
 **理由**:
+
 1. 效率: 减少20%无效候选，评估更快
 2. 可靠性: 双重保险，确保万无一失
 3. 灵活性: 保留20%已采样允许适当exploitation
@@ -431,12 +457,14 @@ python run_experiment.py --config my_experiment.ini
 **背景**: V2尝试4组件设计失败
 
 **分析**:
+
 - V2: 信息增益 + 覆盖度 + 重复惩罚 + 探索平衡（4组件，复杂）
 - V3: 信息增益 + 覆盖度（2组件，简单）+ 硬排除（约束，非组件）
 
 **决策**: 保持V1的2组件设计
 
 **理由**:
+
 1. 简单性: 参数少，易于理解和调优
 2. 稳定性: V1已验证有效，无需重构
 3. 哲学: 硬约束不需要作为加权组件，直接排除更有效
@@ -446,12 +474,14 @@ python run_experiment.py --config my_experiment.ini
 **背景**: V3A最简单，V3C稍复杂
 
 **分析**:
+
 - V3A: 最简单（+0参数），性能+54%
 - V3C: 稍复杂（+1参数），性能+59%，更可靠，更快
 
 **决策**: 推荐V3C用于生产
 
 **理由**:
+
 1. 性能提升: +59% vs +54%（多5%）
 2. 可靠性: 双重保险，从源头预防
 3. 效率: 计算更快（候选集小20%）
@@ -468,6 +498,7 @@ python run_experiment.py --config my_experiment.ini
 **风险点**: V3可能在某些情况下性能不如预期
 
 **缓解措施**:
+
 - ✅ 保留V1作为备选
 - ✅ 详细文档和配置说明
 - ✅ 测试代码验证核心机制
@@ -480,17 +511,20 @@ python run_experiment.py --config my_experiment.ini
 **风险点**: V3可能不适合所有场景
 
 **适用场景** (低风险):
+
 - ✅ 分类自变量 → 连续因变量
 - ✅ 有限试验预算（50-200次）
 - ✅ 大设计空间（>100个设计）
 - ✅ 关注效应估计
 
 **不适用场景** (需谨慎):
+
 - ⚠️ 连续自变量（无限设计空间）
 - ⚠️ 纯寻优任务（不关心效应估计）
 - ⚠️ 极小设计空间（<50个设计）
 
 **缓解措施**:
+
 - ✅ 文档明确说明适用场景
 - ✅ 提供场景判断指南
 
@@ -501,6 +535,7 @@ python run_experiment.py --config my_experiment.ini
 **风险点**: 部署过程可能出现问题
 
 **缓解措施**:
+
 - ✅ 配置文件兼容V1（仅1-2行改动）
 - ✅ 详细的快速开始指南
 - ✅ 故障排查FAQ
@@ -515,18 +550,21 @@ python run_experiment.py --config my_experiment.ini
 ### 技术指标
 
 ✅ **实现完成度**: 100%
+
 - ✅ V3A实现并测试
 - ✅ V3C实现并测试
 - ✅ 配置文件就绪
 - ✅ 文档完整
 
 ✅ **代码质量**: 优秀
+
 - ✅ 继承V1基类，复用核心逻辑
 - ✅ 仅覆写必要方法
 - ✅ 包含测试代码
 - ✅ 适当的日志输出
 
 ✅ **文档质量**: 优秀
+
 - ✅ 理论分析报告（600+ lines）
 - ✅ 快速开始指南（680+ lines）
 - ✅ 配置示例
@@ -661,7 +699,7 @@ python run_experiment.py --config my_experiment.ini
 
 **项目**: Dynamic EUR Acquisition Function V3  
 **作者**: Fengxu Tian  
-**联系**: tianfengxu1997@outlook.com  
+**联系**: <tianfengxu1997@outlook.com>  
 **开发周期**: 2024年10月（V1-V2实验） → 2025年10月（V3开发）  
 **Git仓库**: `d:\WORKSPACE\python\aepsych-source\extensions\dynamic_eur_acquisition\.git`  
 **版本标签**: `v3.0-experimental`
@@ -669,16 +707,19 @@ python run_experiment.py --config my_experiment.ini
 ### 文档索引
 
 **核心文档**:
+
 1. **V3_IMPROVEMENT_REPORT.md** - 完整理论分析（必读）
 2. **V3_QUICK_START.md** - 快速部署指南（必读）
 3. **README.md** - 项目整体概述
 4. **V3_COMPLETION_SUMMARY.md** - 本文档
 
 **历史文档**:
+
 - **FINAL_REPORT_V1.md** - V1实验分析
 - **FINAL_REPORT_V2.md** - V2失败分析
 
 **Git文档**:
+
 - **GIT_REPOSITORY_REPORT.md** - Git仓库详细信息
 - **GIT_QUICK_REFERENCE.md** - Git常用命令
 - **GIT_SETUP_COMPLETE.md** - Git设置完成报告
@@ -686,12 +727,14 @@ python run_experiment.py --config my_experiment.ini
 ### 相关文件
 
 **实现文件**:
+
 - `acquisition_function_v3.py` - V3实现源码
 - `experiment_config_v3a.ini` - V3A配置
 - `experiment_config_v3c.ini` - V3C配置
 - `run_v3_comparison.py` - 对比实验脚本
 
 **基准文件**:
+
 - `acquisition_function_v1.py` - V1实现
 - `acquisition_function_v2.py` - V2实现
 - 相应的配置和结果文件
@@ -730,12 +773,14 @@ python run_experiment.py --config my_experiment.ini
 ### 推荐决策
 
 **生产环境**: **V3C (CombinedAcqf)** ⭐⭐⭐⭐⭐
+
 - 双重保险，最可靠
 - 性能最优（+59%）
 - 计算效率更高
 - 仅增加1个参数，有合理默认值
 
 **快速验证**: **V3A (HardExclusionAcqf)** ⭐⭐⭐⭐
+
 - 最简单，零风险
 - 性能优秀（+54%）
 - 与V1参数完全相同
@@ -747,6 +792,7 @@ python run_experiment.py --config my_experiment.ini
 > **"Make everything as simple as possible, but not simpler."** - Albert Einstein
 
 V3完美诠释了这一哲学:
+
 - 针对性解决重复采样问题（核心问题）
 - 保持V1的简单2组件设计（不过度简化）
 - 硬排除确保100%消除重复（简单有效）
@@ -754,12 +800,14 @@ V3完美诠释了这一哲学:
 ### 最后的话
 
 V3的成功源于:
+
 1. **深刻的问题理解**: V1的唯一问题是重复采样
 2. **正确的方法选择**: 硬约束优于软惩罚
 3. **恰当的复杂度**: 保持简单，针对性改进
 4. **充分的验证**: 测试确认机制有效
 
 这与V2的失败形成鲜明对比:
+
 - V2: 过度设计，全面重构，软惩罚 → 失败
 - V3: 针对性改进，保持简单，硬约束 → 成功
 
@@ -779,9 +827,10 @@ V3的成功源于:
 *文档日期*: 2025-10-30  
 *版本*: 1.0  
 *作者*: Fengxu Tian  
-*邮箱*: tianfengxu1997@outlook.com
+*邮箱*: <tianfengxu1997@outlook.com>
 
 **附录**:
+
 - Git提交: 55feca9, 041b5ff
 - Git标签: v3.0-experimental
 - 文件数: 5个新文件

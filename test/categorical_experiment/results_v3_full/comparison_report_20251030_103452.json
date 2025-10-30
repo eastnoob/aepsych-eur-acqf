@@ -1,0 +1,101 @@
+{
+  "timestamp": "20251030_103452",
+  "user_type": "balanced",
+  "user_noise": 0.5,
+  "seed": 42,
+  "methods": {
+    "V1": {
+      "config": "experiment_config.ini",
+      "db_path": "D:\\WORKSPACE\\python\\aepsych-source\\extensions\\dynamic_eur_acquisition\\test\\categorical_experiment\\results_v3_full\\experiment_V1_20251030_103204.db",
+      "n_trials": 60,
+      "coverage": {
+        "unique_designs": 27.0,
+        "total_designs": 360.0,
+        "coverage_rate": 0.075,
+        "repeat_rate": 0.55,
+        "color_coverage": 1.0,
+        "layout_coverage": 1.0,
+        "font_coverage": 1.8333333333333333,
+        "animation_coverage": 1.0,
+        "avg_factor_coverage": 1.2083333333333333,
+        "interaction_pairs": 39.0,
+        "color_layout_pairs": 11.0,
+        "layout_anim_pairs": 10.0,
+        "font_anim_pairs": 8.0,
+        "interaction_coverage": 0.78
+      },
+      "quality": {
+        "mean_rating": 6.15,
+        "std_rating": 1.2359207094308275,
+        "mean_true_score": 8.58121141288877,
+        "std_true_score": 0.9282169605480971,
+        "max_rating": 8.0,
+        "max_true_score": 10.407790865966588,
+        "high_score_count": 9.0,
+        "high_score_rate": 0.15
+      }
+    },
+    "V3A": {
+      "config": "experiment_config_v3a.ini",
+      "db_path": "D:\\WORKSPACE\\python\\aepsych-source\\extensions\\dynamic_eur_acquisition\\test\\categorical_experiment\\results_v3_full\\experiment_V3A_20251030_103307.db",
+      "n_trials": 60,
+      "coverage": {
+        "unique_designs": 21.0,
+        "total_designs": 360.0,
+        "coverage_rate": 0.058333333333333334,
+        "repeat_rate": 0.65,
+        "color_coverage": 1.0,
+        "layout_coverage": 1.0,
+        "font_coverage": 1.6666666666666667,
+        "animation_coverage": 1.0,
+        "avg_factor_coverage": 1.1666666666666667,
+        "interaction_pairs": 40.0,
+        "color_layout_pairs": 13.0,
+        "layout_anim_pairs": 10.0,
+        "font_anim_pairs": 10.0,
+        "interaction_coverage": 0.8
+      },
+      "quality": {
+        "mean_rating": 5.85,
+        "std_rating": 0.9802210635021742,
+        "mean_true_score": 8.211618115399501,
+        "std_true_score": 0.6093406779843195,
+        "max_rating": 8.0,
+        "max_true_score": 9.7,
+        "high_score_count": 1.0,
+        "high_score_rate": 0.016666666666666666
+      }
+    },
+    "V3C": {
+      "config": "experiment_config_v3c.ini",
+      "db_path": "D:\\WORKSPACE\\python\\aepsych-source\\extensions\\dynamic_eur_acquisition\\test\\categorical_experiment\\results_v3_full\\experiment_V3C_20251030_103358.db",
+      "n_trials": 60,
+      "coverage": {
+        "unique_designs": 29.0,
+        "total_designs": 360.0,
+        "coverage_rate": 0.08055555555555556,
+        "repeat_rate": 0.5166666666666666,
+        "color_coverage": 1.0,
+        "layout_coverage": 1.0,
+        "font_coverage": 1.8333333333333333,
+        "animation_coverage": 1.0,
+        "avg_factor_coverage": 1.2083333333333333,
+        "interaction_pairs": 41.0,
+        "color_layout_pairs": 12.0,
+        "layout_anim_pairs": 10.0,
+        "font_anim_pairs": 10.0,
+        "interaction_coverage": 0.82
+      },
+      "quality": {
+        "mean_rating": 5.65,
+        "std_rating": 1.1807483502705676,
+        "mean_true_score": 8.123744892132212,
+        "std_true_score": 0.820325987064212,
+        "max_rating": 8.0,
+        "max_true_score": 10.5,
+        "high_score_count": 2.0,
+        "high_score_rate": 0.03333333333333333
+      }
+    }
+  }
+}
