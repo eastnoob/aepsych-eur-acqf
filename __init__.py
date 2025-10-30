@@ -1,21 +1,22 @@
 """
-Extensions: EUR family acquisition functions and utilities for AEPsych.
+Dynamic EUR Acquisition Function (V4) for AEPsych.
 
-This package is streamlined to focus on V4 (EURAcqfV4) in the root. Legacy
-variants (V1/V2/V3) and auxiliary generators are available under the
-`legacy/` subpackage to avoid clutter while keeping optional compatibility.
+This package exposes the V4 EUR acquisition function and core utilities at the
+root level. Legacy variants (V1/V2/V3) and auxiliary generators are available
+under the `legacy/` subpackage to keep the root minimal while preserving
+optional compatibility.
 """
 
 __version__ = "2.1.0"
+__author__ = "Fengxu Tian"
 
-# V4 and core utilities (kept in package root)
+# Core V4 exports
 from .acquisition_function_v4 import EURAcqfV4
-from .gower_distance import gower_distance, compute_coverage
+from .gower_distance import gower_distance, compute_coverage_batch, compute_coverage
 from .gp_variance import GPVarianceCalculator
 
-# Optional legacy variants are loaded from the `legacy` subpackage if present.
-# These are not required for using V4.
-try:  # pragma: no cover - optional legacy imports
+# Optional legacy exports (best-effort; absent if legacy/ not present)
+try:  # pragma: no cover
     from .legacy.acquisition_function import VarianceReductionWithCoverageAcqf
 except Exception:  # pragma: no cover
     VarianceReductionWithCoverageAcqf = None  # type: ignore
@@ -37,19 +38,21 @@ except Exception:  # pragma: no cover
     HardExclusionGenerator = None  # type: ignore
 
 __all__ = [
-    name
-    for name, sym in {
-        # Core V4 API and utilities
-        "EURAcqfV4": EURAcqfV4,
-        "gower_distance": gower_distance,
-        "compute_coverage": compute_coverage,
-        "GPVarianceCalculator": GPVarianceCalculator,
-        # Optional legacy symbols (available if legacy subpackage exists)
-        "VarianceReductionWithCoverageAcqf": VarianceReductionWithCoverageAcqf,
-        "EnhancedVarianceReductionAcqf": EnhancedVarianceReductionAcqf,
-        "HardExclusionAcqf": HardExclusionAcqf,
-        "CombinedAcqf": CombinedAcqf,
-        "HardExclusionGenerator": HardExclusionGenerator,
-    }.items()
-    if sym is not None
+    "EURAcqfV4",
+    "gower_distance",
+    "compute_coverage_batch",
+    "compute_coverage",
+    "GPVarianceCalculator",
 ]
+
+# Conditionally extend __all__ with legacy symbols if available
+if VarianceReductionWithCoverageAcqf is not None:
+    __all__.append("VarianceReductionWithCoverageAcqf")
+if EnhancedVarianceReductionAcqf is not None:
+    __all__.append("EnhancedVarianceReductionAcqf")
+if HardExclusionAcqf is not None:
+    __all__.append("HardExclusionAcqf")
+if CombinedAcqf is not None:
+    __all__.append("CombinedAcqf")
+if HardExclusionGenerator is not None:
+    __all__.append("HardExclusionGenerator")

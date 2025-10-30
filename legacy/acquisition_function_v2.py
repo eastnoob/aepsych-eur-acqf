@@ -26,8 +26,8 @@ from botorch.utils.transforms import t_batch_mode_transform
 
 # 支持相对导入和直接导入
 try:
-    from ..gower_distance import compute_coverage_batch, compute_coverage
-    from ..gp_variance import GPVarianceCalculator
+    from .gower_distance import compute_coverage_batch, compute_coverage
+    from .gp_variance import GPVarianceCalculator
 except ImportError:
     from gower_distance import compute_coverage_batch, compute_coverage
     from gp_variance import GPVarianceCalculator
