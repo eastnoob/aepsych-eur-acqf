@@ -28,13 +28,32 @@ from acquisition_function_v3 import HardExclusionAcqf, CombinedAcqf
 def generate_all_designs():
     """生成所有可能的设计（360个）"""
     designs = []
-    # color: 5, layout: 4, font_size: 6, background: 3
+    color_schemes = ["blue", "green", "red", "purple", "orange"]
+    layouts = ["grid", "list", "card", "timeline"]
+    font_sizes = [12, 14, 16, 18, 20, 22]
+    animations = ["none", "subtle", "dynamic"]
+    
+    # 生成所有组合的索引表示
     for c in range(5):
         for l in range(4):
             for f in range(6):
-                for b in range(3):
-                    designs.append([c, l, f, b])
+                for a in range(3):
+                    designs.append([c, l, f, a])
     return np.array(designs)
+
+def design_vector_to_dict(vector):
+    """将设计向量转为字典"""
+    color_schemes = ["blue", "green", "red", "purple", "orange"]
+    layouts = ["grid", "list", "card", "timeline"]
+    font_sizes = [12, 14, 16, 18, 20, 22]
+    animations = ["none", "subtle", "dynamic"]
+    
+    return {
+        "color_scheme": color_schemes[int(vector[0])],
+        "layout": layouts[int(vector[1])],
+        "font_size": font_sizes[int(vector[2])],
+        "animation": animations[int(vector[3])]
+    }
 
 
 def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, seed=42):
@@ -54,16 +73,10 @@ def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, see
     print(f"运行 {acqf_name} 实验")
     print(f"{'='*70}")
 
-    # 虚拟用户
+    # 虚拟用户（使用balanced类型模拟真实被试）
     virtual_user = VirtualUser(
-        main_effects={
-            "color": [0.0, 1.5, 0.5, -0.5, -1.0],
-            "layout": [0.0, 1.0, 0.3, -0.8],
-            "font_size": [0.0, 0.2, 0.5, 0.8, 1.0, 0.6],
-            "background": [0.0, -0.5, 0.3],
-        },
-        interactions={(0, 1): 1.0, (1, 3): -0.8, (2, 3): 0.6},
-        noise_std=0.5,
+        user_type="balanced",
+        noise_level=0.5,
         seed=seed,
     )
 
@@ -91,8 +104,12 @@ def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, see
     init_indices = np.random.choice(len(all_designs), size=n_init, replace=False)
     for idx in init_indices:
         x = all_designs[idx]
-        response = virtual_user.respond(x)
-        true_score = virtual_user.get_true_score(x)
+        design_dict = design_vector_to_dict(x)
+        
+        # 虚拟用户评分
+        rating_result = virtual_user.rate_design(design_dict)
+        response = rating_result['rating']
+        true_score = virtual_user.get_ground_truth(design_dict)
 
         X_sampled.append(x)
         y_sampled.append(response)
@@ -123,8 +140,10 @@ def run_simplified_experiment(acqf_class, acqf_name, n_trials=80, n_init=20, see
         x_next = candidates[best_idx]
 
         # 虚拟用户响应
-        response = virtual_user.respond(x_next)
-        true_score = virtual_user.get_true_score(x_next)
+        design_dict = design_vector_to_dict(x_next)
+        rating_result = virtual_user.rate_design(design_dict)
+        response = rating_result['rating']
+        true_score = virtual_user.get_ground_truth(design_dict)
 
         # 记录
         X_sampled = np.vstack([X_sampled, x_next])

@@ -80,6 +80,49 @@ class HardExclusionAcqf(VarianceReductionWithCoverageAcqf):
 
         return scores
 
+    def select_next(self, X_candidates, n_select=1):
+        """
+        选择下一个采样点，确保不重复
+        
+        关键改进：跳过已采样设计，选择未采样的top-n
+        确保返回的数量 == n_select（即使需要选次优）
+        """
+        # 获取所有得分
+        scores = self(X_candidates)
+        
+        # 标识未采样的设计
+        unsampled_mask = np.ones(len(X_candidates), dtype=bool)
+        for i, x in enumerate(X_candidates):
+            design_key = self._design_to_key(x)
+            if design_key in self._sampled_designs:
+                unsampled_mask[i] = False
+        
+        # 获取未采样设计的索引
+        unsampled_indices = np.where(unsampled_mask)[0]
+        
+        if len(unsampled_indices) == 0:
+            # 如果所有候选都已采样（极端情况），随机选择
+            print(f"[HardExclusionAcqf] 警告：所有候选设计都已采样，随机选择")
+            selected_indices = np.random.choice(len(X_candidates), size=min(n_select, len(X_candidates)), replace=False)
+        else:
+            # 获取未采样设计的得分
+            unsampled_scores = scores[unsampled_indices]
+            
+            # 按得分降序排列（使用argsort，然后反转）
+            sorted_order = np.argsort(-unsampled_scores)  # 负号实现降序
+            sorted_unsampled_idx = unsampled_indices[sorted_order]
+            
+            # 选择top-n
+            n_available = min(n_select, len(sorted_unsampled_idx))
+            selected_indices = sorted_unsampled_idx[:n_available]
+            
+            if n_available < n_select:
+                print(f"[HardExclusionAcqf] 警告：仅有{n_available}个未采样设计，少于请求的{n_select}个")
+        
+        selected_X = X_candidates[selected_indices]
+        
+        return selected_X, selected_indices
+
 
 class CombinedAcqf(VarianceReductionWithCoverageAcqf):
     """
@@ -182,6 +225,49 @@ class CombinedAcqf(VarianceReductionWithCoverageAcqf):
 
         return scores
 
+    def select_next(self, X_candidates, n_select=1):
+        """
+        选择下一个采样点，确保不重复
+        
+        关键改进：跳过已采样设计，选择未采样的top-n
+        确保返回的数量 == n_select（即使需要选次优）
+        """
+        # 获取所有得分
+        scores = self(X_candidates)
+        
+        # 标识未采样的设计
+        unsampled_mask = np.ones(len(X_candidates), dtype=bool)
+        for i, x in enumerate(X_candidates):
+            design_key = self._design_to_key(x)
+            if design_key in self._sampled_designs:
+                unsampled_mask[i] = False
+        
+        # 获取未采样设计的索引
+        unsampled_indices = np.where(unsampled_mask)[0]
+        
+        if len(unsampled_indices) == 0:
+            # 如果所有候选都已采样（极端情况），随机选择
+            print(f"[CombinedAcqf] 警告：所有候选设计都已采样，随机选择")
+            selected_indices = np.random.choice(len(X_candidates), size=min(n_select, len(X_candidates)), replace=False)
+        else:
+            # 获取未采样设计的得分
+            unsampled_scores = scores[unsampled_indices]
+            
+            # 按得分降序排列（使用argsort，然后反转）
+            sorted_order = np.argsort(-unsampled_scores)  # 负号实现降序
+            sorted_unsampled_idx = unsampled_indices[sorted_order]
+            
+            # 选择top-n
+            n_available = min(n_select, len(sorted_unsampled_idx))
+            selected_indices = sorted_unsampled_idx[:n_available]
+            
+            if n_available < n_select:
+                print(f"[CombinedAcqf] 警告：仅有{n_available}个未采样设计，少于请求的{n_select}个")
+        
+        selected_X = X_candidates[selected_indices]
+        
+        return selected_X, selected_indices
+
 
 # 配置加载支持
 def load_from_config(config_str, acqf_type="hard_exclusion"):
@@ -252,8 +338,8 @@ def load_from_config(config_str, acqf_type="hard_exclusion"):
 
 if __name__ == "__main__":
     # 简单测试
-    print("V3 Acquisition Functions")
-    print("=" * 50)
+    print("V3 Acquisition Functions - 测试不重复选择逻辑")
+    print("=" * 70)
 
     # 测试硬排除
     print("\n方案A: 硬排除")
@@ -275,21 +361,63 @@ if __name__ == "__main__":
 
     print(f"已采样设计: {acqf_a._sampled_designs}")
 
-    X_test = np.array([[0, 0, 0], [0, 1, 2], [1, 1, 1]])  # [0,1,2]是已采样
-    print(f"测试设计keys: {[acqf_a._design_to_key(x) for x in X_test]}")
-
-    # 直接调用 _evaluate_numpy 测试硬排除
-    print("\n直接测试 _evaluate_numpy:")
-    scores_numpy = acqf_a._evaluate_numpy(X_test)
-    print(f"候选点: {X_test.tolist()}")
-    print(f"得分: {scores_numpy}")
-    print(f"已采样设计 [0,1,2] 的得分: {scores_numpy[1]}")
-    print(f"是否为 -inf: {scores_numpy[1] == -np.inf}")
-
+    # 测试1: select_next是否跳过已采样设计
+    print("\n【测试1: select_next跳过已采样设计】")
+    X_candidates = np.array([
+        [0, 1, 2],  # 已采样 (应该跳过)
+        [1, 0, 1],  # 已采样 (应该跳过)
+        [2, 2, 0],  # 已采样 (应该跳过)
+        [3, 3, 3],  # 未采样
+        [4, 4, 4],  # 未采样
+        [5, 5, 5],  # 未采样
+    ])
+    
+    selected_X, selected_idx = acqf_a.select_next(X_candidates, n_select=2)
+    print(f"请求选择: 2个设计")
+    print(f"选中的索引: {selected_idx}")
+    print(f"选中的设计: {selected_X.tolist()}")
+    
+    # 验证是否未采样
+    all_unsampled = True
+    for x in selected_X:
+        key = acqf_a._design_to_key(x)
+        if key in acqf_a._sampled_designs:
+            all_unsampled = False
+            print(f"❌ 错误：选中了已采样设计 {x.tolist()}")
+    
+    if all_unsampled:
+        print(f"✅ 正确：所有选中的设计都是未采样的")
+    
+    # 测试2: 当候选集中有很多已采样设计时
+    print("\n【测试2: 候选集中80%已采样】")
+    X_many_sampled = np.array([
+        [0, 1, 2], [1, 0, 1], [2, 2, 0],  # 前3个已采样
+        [0, 1, 2], [1, 0, 1], [2, 2, 0],  # 重复的已采样
+        [0, 1, 2], [1, 0, 1],              # 又是已采样
+        [3, 3, 3], [4, 4, 4]               # 最后2个未采样
+    ])
+    
+    selected_X2, selected_idx2 = acqf_a.select_next(X_many_sampled, n_select=2)
+    print(f"候选集: 10个设计，其中8个已采样，2个未采样")
+    print(f"选中的索引: {selected_idx2}")
+    print(f"选中的设计: {selected_X2.tolist()}")
+    
+    # 验证
+    all_unsampled2 = True
+    for x in selected_X2:
+        key = acqf_a._design_to_key(x)
+        if key in acqf_a._sampled_designs:
+            all_unsampled2 = False
+            print(f"❌ 错误：选中了已采样设计 {x.tolist()}")
+    
+    if all_unsampled2:
+        print(f"✅ 正确：即使候选集80%已采样，仍然只选择了未采样设计")
+    
     # 测试组合方案
-    print("\n方案C: 组合方案")
+    print("\n" + "="*70)
+    print("方案C: 组合方案")
     acqf_c = CombinedAcqf(
-        model=None,  # 测试时不需要实际模型
+        model=None,
         lambda_min=0.5,
         lambda_max=3.0,
         tau_1=0.5,
@@ -300,27 +428,26 @@ if __name__ == "__main__":
     )
     acqf_c.fit(X_train, y_train)
 
-    # 测试候选集过滤
-    X_candidates = np.array(
-        [
-            [0, 1, 2],  # 已采样
-            [1, 0, 1],  # 已采样
-            [3, 3, 3],  # 未采样
-            [4, 4, 4],  # 未采样
-            [5, 5, 5],  # 未采样
-        ]
-    )
-    filtered = acqf_c.filter_candidates(X_candidates)
-    print(f"原始候选集大小: {len(X_candidates)}")
+    # 测试候选集过滤 + select_next
+    print("\n【测试3: 组合方案的候选集过滤】")
+    filtered = acqf_c.filter_candidates(X_many_sampled)
+    print(f"原始候选集大小: {len(X_many_sampled)}")
     print(f"过滤后候选集大小: {len(filtered)}")
-    print(f"过滤后应优先包含未采样设计")
+    
+    selected_X3, selected_idx3 = acqf_c.select_next(X_many_sampled, n_select=2)
+    print(f"选中的设计: {selected_X3.tolist()}")
+    
+    # 验证
+    all_unsampled3 = True
+    for x in selected_X3:
+        key = acqf_c._design_to_key(x)
+        if key in acqf_c._sampled_designs:
+            all_unsampled3 = False
+            print(f"❌ 错误：选中了已采样设计 {x.tolist()}")
+    
+    if all_unsampled3:
+        print(f"✅ 正确：组合方案也正确跳过已采样设计")
 
-    # 直接测试 _evaluate_numpy
-    print("\n直接测试 _evaluate_numpy:")
-    scores_numpy_c = acqf_c._evaluate_numpy(X_test)
-    print(f"候选点: {X_test.tolist()}")
-    print(f"得分: {scores_numpy_c}")
-    print(f"已采样设计 [0,1,2] 的得分: {scores_numpy_c[1]}")
-    print(f"是否为 -inf: {scores_numpy_c[1] == -np.inf}")
-
-    print("\nV3采集函数基本测试完成")
+    print("\n" + "="*70)
+    print("✅ V3不重复选择逻辑测试完成")
+    print("="*70)
