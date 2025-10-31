@@ -8,6 +8,8 @@ EUR Acquisition Function (V4): forward-only, fresh Dt, space-canonicalized, vari
 - 支持从 ParameterTransforms 推断 variable_types（未显式提供时）。
 
 目标：降低重复采样，严格符合 α(x;Dt)=α_info+α_cov 与动态 λ_t 设计。
+
+这个函数与ordinal的兼容有问题，V5将对此进行解决。
 """
 
 from __future__ import annotations
