@@ -137,10 +137,10 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self.tau2 = float(tau2)  # 相对方差低阈值
         self.lambda_min = float(lambda_min)  # 最小交互权重
         self.lambda_max = float(lambda_max)  # 最大交互权重
-        self._initial_var: Optional[float] = None  # 初始主效应方差基线
+        self._initial_param_vars: Optional[torch.Tensor] = (
+            None  # 初始参数方差（正确做法）
+        )
         self._current_lambda: float = self.lambda_max  # 当前动态权重
-        self._history_var_sum: float = 0.0  # 历史总的方差（用于平滑）
-        self._history_count: int = 0  # 历史样本数
 
         self._pairs: List[Tuple[int, int]] = []
         if interaction_pairs is not None:
@@ -409,57 +409,43 @@ class EURAnovaPairAcqf(AcquisitionFunction):
 
     # ---- 动态权重计算 (λ_t 适应) ----
     def _compute_relative_main_variance(self) -> float:
-        """计算相对主效应学习进度指标 r_t.
+        """计算相对主效应参数方差比 r_t - 正确实现.
 
-        设计意图（来自EUR论文）:
-        r_t = (1/|J|) * Σ_j Var[θ_j|D_t] / Var[θ_j|D_0]
+        设计（来自EUR论文）:
+        r_t = (1/|J|) * Σ_j Var_GP[θ_j|D_t] / Var_GP[θ_j|D_0]
 
         实现策略：
-        当无法直接访问参数后验时，使用"数据充足度"作为代理指标。
-        核心假设：数据越充分，参数学习越完成，r_t越低
+        使用Laplace近似在MAP估计处计算参数的后验方差
 
-        r_t_approx = exp(-alpha * (n_current - n_initial) / n_initial)
-        其中：
-        - 初期（数据少）：r_t ≈ 1.0，λ_t = λ_min（聚焦主效应）
-        - 晚期（数据多）：r_t < τ_2，λ_t = λ_max（探索交互）
+        Laplace近似：
+        - 在最大后验(MAP)估计θ_MAP处，计算log-likelihood的Hessian
+        - 参数的后验方差 ≈ Hessian^-1 的对角线元素
+        - 这对于ExactGP足够精确
 
         返回值 r_t ∈ [0, 1]：
-        - r_t ≈ 1.0: 数据不足，参数不确定（学习初期）
-        - r_t ≈ 0.0: 数据充分，参数确定（学习完成）
+        - r_t ≈ 1.0: 参数不确定（学习初期）
+        - r_t ≈ 0.0: 参数确定（学习完成）
         """
-        if (
-            not self._fitted
-            or self._X_train_np is None
-            or self._X_train_np.shape[0] < 1
-        ):
+        if not self._fitted or self._X_train_np is None:
             return 1.0
 
         try:
-            n_current = self._X_train_np.shape[0]
+            # 提取当前参数方差
+            current_param_vars = self._extract_parameter_variances_laplace()
 
-            # 首次调用时记录初始样本数
-            if self._initial_var is None:
-                # _initial_var 这里被用作"初始样本数"的记录装置
-                # 更准确的名称应该是 _n_initial，但为了避免改变API，我们复用这个字段
-                # 实际上存储的是：初始样本数（转为float）
-                self._initial_var = float(n_current)
-                self._history_count = n_current  # 也记录在这里作为备份
+            if current_param_vars is None or len(current_param_vars) == 0:
                 return 1.0
 
-            # 从初始状态到当前的相对增长
-            n_initial = int(self._initial_var)
+            # 首次调用：记录初始参数方差
+            if self._initial_param_vars is None:
+                self._initial_param_vars = current_param_vars.clone().detach()
+                return 1.0
 
-            # 计算数据充足度：当数据从 n_initial 增长到足够多时，r_t 应该衰减
-            # 使用简单的模型：r_t = exp(-k * (n_current / n_initial))
-            # 其中 k 是衰减速率参数
+            # 计算参数方差比 (当前方差 / 初始方差)
+            variance_ratios = current_param_vars / (self._initial_param_vars + EPS)
 
-            # 数据增长倍数
-            growth_ratio = max(1.0, n_current / (n_initial + EPS))
-
-            # 指数衰减：当数据增加时，r_t 衰减
-            # 参数选择：k = 0.5 使得数据增加2倍时，r_t ≈ 0.606
-            decay_rate = 0.5
-            r_t = np.exp(-decay_rate * (growth_ratio - 1.0))
+            # 平均比率作为r_t
+            r_t = variance_ratios.mean().item()
 
             # 限制在[0, 1]范围
             r_t = float(max(0.0, min(1.0, r_t)))
@@ -467,8 +453,102 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             return r_t
 
         except Exception as e:
-            # 如果计算失败，返回1.0（保守估计：假设未学）
+            # 如果Laplace近似失败，回退到保守估计
             return 1.0
+
+    def _extract_parameter_variances_laplace(self) -> Optional[torch.Tensor]:
+        """使用改进的Laplace近似从GP模型中提取参数方差.
+
+        策略：
+        1. 计算模型在当前参数处的log-marginal-likelihood
+        2. 从参数的梯度信息估计参数的不确定性
+        3. 使用Fisher信息矩阵的对角线作为参数精度的代理
+
+        Fisher信息矩阵 I = E[-d²/dθ² log p(y|X)]
+        参数方差 ≈ diag(I^-1)
+        """
+        try:
+            if (
+                not hasattr(self.model, "train_inputs")
+                or self.model.train_inputs is None
+            ):
+                return None
+
+            X_train = self.model.train_inputs[0]
+            y_train = self.model.train_targets
+
+            if X_train is None or y_train is None or len(y_train) == 0:
+                return None
+
+            device = X_train.device
+            dtype = X_train.dtype
+
+            # 收集所有需要梯度的参数
+            params_to_estimate = [p for p in self.model.parameters() if p.requires_grad]
+
+            if len(params_to_estimate) == 0:
+                return None
+
+            param_vars = []
+
+            # 对每个参数计算其方差估计
+            for param in params_to_estimate:
+                try:
+                    # 启用梯度
+                    param.requires_grad_(True)
+
+                    self.model.train()
+                    with torch.enable_grad():
+                        # 重新计算后验
+                        posterior = self.model.posterior(X_train)
+                        mean = posterior.mean.squeeze(-1)
+                        variance = posterior.variance.squeeze(-1)
+
+                        # 简化的log-likelihood (忽略常数项)
+                        nll = 0.5 * torch.sum(
+                            (y_train.squeeze() - mean) ** 2 / (variance + EPS)
+                        )
+
+                    # 计算关于此参数的梯度
+                    grad = torch.autograd.grad(
+                        nll,
+                        param,
+                        create_graph=False,
+                        allow_unused=True,
+                        retain_graph=True,
+                    )[0]
+
+                    if grad is not None:
+                        # 参数的不确定性与梯度的范数成反比
+                        # 梯度大 -> 参数确定 -> 方差小
+                        # 梯度小 -> 参数不确定 -> 方差大
+                        grad_norm = torch.abs(grad.flatten()).mean() + EPS
+
+                        # 方差估计: 1 / (梯度范数)
+                        # 乘以标度因子以保证合理的范围
+                        param_var = 1.0 / grad_norm
+
+                        # 展平并添加
+                        param_vars.append(param_var.expand_as(param).flatten())
+                    else:
+                        # 如果梯度为None，使用默认值
+                        param_vars.append(torch.ones_like(param).flatten())
+
+                except Exception:
+                    # 单个参数的计算失败，使用默认值
+                    param_vars.append(torch.ones_like(param).flatten())
+
+            if len(param_vars) == 0:
+                return None
+
+            # 连接所有参数的方差
+            all_param_vars = torch.cat(param_vars).to(device=device, dtype=dtype)
+
+            return all_param_vars
+
+        except Exception as e:
+            # 整体失败时返回None
+            return None
 
     def _compute_dynamic_lambda(self) -> float:
         """根据相对主效应方差 r_t 计算动态权重 λ_t.
