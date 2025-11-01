@@ -55,6 +55,12 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         # 主/交互权重
         main_weight: float = 0.5,
         pair_weight: float = 1.0,
+        # 动态权重参数 (λ_t 适应)
+        use_dynamic_lambda: bool = True,
+        tau1: float = 0.7,
+        tau2: float = 0.3,
+        lambda_min: float = 0.1,
+        lambda_max: float = 1.0,
         # 交互对（以索引字符串或索引二元组给出）
         interaction_pairs: Optional[Sequence[Union[str, Tuple[int, int]]]] = None,
         # 局部扰动参数
@@ -124,6 +130,17 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self.pair_weight = float(pair_weight)
         self.local_jitter_frac = float(local_jitter_frac)
         self.local_num = int(local_num)
+
+        # 动态权重参数
+        self.use_dynamic_lambda = bool(use_dynamic_lambda)
+        self.tau1 = float(tau1)  # 相对方差高阈值
+        self.tau2 = float(tau2)  # 相对方差低阈值
+        self.lambda_min = float(lambda_min)  # 最小交互权重
+        self.lambda_max = float(lambda_max)  # 最大交互权重
+        self._initial_var: Optional[float] = None  # 初始主效应方差基线
+        self._current_lambda: float = self.lambda_max  # 当前动态权重
+        self._history_var_sum: float = 0.0  # 历史总的方差（用于平滑）
+        self._history_count: int = 0  # 历史样本数
 
         self._pairs: List[Tuple[int, int]] = []
         if interaction_pairs is not None:
@@ -215,6 +232,7 @@ class EURAnovaPairAcqf(AcquisitionFunction):
 
     # ---- data sync ----
     def _ensure_fresh_data(self) -> None:
+        """同步训练数据，并在模型更新时重置动态权重的基线."""
         if not hasattr(self.model, "train_inputs") or self.model.train_inputs is None:
             return
         X_t = self.model.train_inputs[0]
@@ -227,6 +245,10 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             self._y_train_np = y_t.detach().cpu().numpy()
             self._last_hist_n = n
             self._fitted = True
+
+            # 【重要】不重置 _initial_var，让它在第一次模型创建时设置，之后保持不变
+            # 这样 r_t 才能真正反映从初始状态到当前状态的学习进度
+
             self._maybe_infer_variable_types()
 
     # ---- 基础信息度量：序数用熵，回归用方差 ----
@@ -385,6 +407,105 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         entropy = -torch.sum(probs * torch.log(probs), dim=-1)
         return entropy
 
+    # ---- 动态权重计算 (λ_t 适应) ----
+    def _compute_relative_main_variance(self) -> float:
+        """计算相对主效应学习进度指标 r_t.
+
+        设计意图（来自EUR论文）:
+        r_t = (1/|J|) * Σ_j Var[θ_j|D_t] / Var[θ_j|D_0]
+
+        实现策略：
+        当无法直接访问参数后验时，使用"数据充足度"作为代理指标。
+        核心假设：数据越充分，参数学习越完成，r_t越低
+
+        r_t_approx = exp(-alpha * (n_current - n_initial) / n_initial)
+        其中：
+        - 初期（数据少）：r_t ≈ 1.0，λ_t = λ_min（聚焦主效应）
+        - 晚期（数据多）：r_t < τ_2，λ_t = λ_max（探索交互）
+
+        返回值 r_t ∈ [0, 1]：
+        - r_t ≈ 1.0: 数据不足，参数不确定（学习初期）
+        - r_t ≈ 0.0: 数据充分，参数确定（学习完成）
+        """
+        if (
+            not self._fitted
+            or self._X_train_np is None
+            or self._X_train_np.shape[0] < 1
+        ):
+            return 1.0
+
+        try:
+            n_current = self._X_train_np.shape[0]
+
+            # 首次调用时记录初始样本数
+            if self._initial_var is None:
+                # _initial_var 这里被用作"初始样本数"的记录装置
+                # 更准确的名称应该是 _n_initial，但为了避免改变API，我们复用这个字段
+                # 实际上存储的是：初始样本数（转为float）
+                self._initial_var = float(n_current)
+                self._history_count = n_current  # 也记录在这里作为备份
+                return 1.0
+
+            # 从初始状态到当前的相对增长
+            n_initial = int(self._initial_var)
+
+            # 计算数据充足度：当数据从 n_initial 增长到足够多时，r_t 应该衰减
+            # 使用简单的模型：r_t = exp(-k * (n_current / n_initial))
+            # 其中 k 是衰减速率参数
+
+            # 数据增长倍数
+            growth_ratio = max(1.0, n_current / (n_initial + EPS))
+
+            # 指数衰减：当数据增加时，r_t 衰减
+            # 参数选择：k = 0.5 使得数据增加2倍时，r_t ≈ 0.606
+            decay_rate = 0.5
+            r_t = np.exp(-decay_rate * (growth_ratio - 1.0))
+
+            # 限制在[0, 1]范围
+            r_t = float(max(0.0, min(1.0, r_t)))
+
+            return r_t
+
+        except Exception as e:
+            # 如果计算失败，返回1.0（保守估计：假设未学）
+            return 1.0
+
+    def _compute_dynamic_lambda(self) -> float:
+        """根据相对主效应方差 r_t 计算动态权重 λ_t.
+
+        设计:
+        分段函数：
+        ┌─ λ_min              if r_t > τ_1  (主效应未学，优先主效应)
+        ├─ λ_min + (λ_max-λ_min)·(τ_1-r_t)/(τ_1-τ_2)  if τ_2 ≤ r_t ≤ τ_1  (过渡)
+        └─ λ_max              if r_t < τ_2  (主效应已学，开始探索交互)
+
+        参数含义：
+        - τ_1 = 0.7: 主效应学习还不充分的阈值
+        - τ_2 = 0.3: 主效应学习充分的阈值
+        - λ_min = 0.1: 最小交互权重（主效应阶段）
+        - λ_max = 1.0: 最大交互权重（交互阶段）
+        """
+        if not self.use_dynamic_lambda:
+            return float(self.pair_weight)
+
+        r_t = self._compute_relative_main_variance()
+
+        # 分段函数实现
+        if r_t > self.tau1:
+            # 主效应方差比高，未充分学习 → 抑制交互探索
+            lambda_t = self.lambda_min
+        elif r_t < self.tau2:
+            # 主效应方差比低，已充分学习 → 加强交互探索
+            lambda_t = self.lambda_max
+        else:
+            # 线性插值过渡阶段 [τ_2, τ_1]
+            # 当r_t从τ_1→τ_2时，λ从λ_min→λ_max
+            t_ratio = (self.tau1 - r_t) / (self.tau1 - self.tau2 + EPS)
+            lambda_t = self.lambda_min + (self.lambda_max - self.lambda_min) * t_ratio
+
+        self._current_lambda = float(lambda_t)
+        return float(lambda_t)
+
     # ---- coverage (numpy Gower) ----
     def _compute_coverage_numpy(self, X_can_t: torch.Tensor) -> torch.Tensor:
         assert self._fitted and self._X_train_np is not None
@@ -502,8 +623,9 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         else:
             pair_sum = torch.zeros_like(I0)
 
-        # 信息项融合
-        info_raw = self.main_weight * main_sum + self.pair_weight * pair_sum  # (B,)
+        # 信息项融合（使用动态λ_t）
+        lambda_t = self._compute_dynamic_lambda()
+        info_raw = self.main_weight * main_sum + lambda_t * pair_sum  # (B,)
 
         # 覆盖项（沿用 V5）
         try:
