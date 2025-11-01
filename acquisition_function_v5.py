@@ -17,6 +17,7 @@ Notes:
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple, Union
+import logging
 
 import numpy as np
 import torch
@@ -34,6 +35,7 @@ except Exception:  # pragma: no cover
 
 
 EPS = 1e-8
+logger = logging.getLogger(__name__)
 
 
 class EURAcqfV5(AcquisitionFunction):
@@ -91,25 +93,30 @@ class EURAcqfV5(AcquisitionFunction):
 
         self.variable_types: Optional[Dict[int, str]] = variable_types
         if variable_types_list is not None and self.variable_types is None:
-            tokens = (
-                [
-                    t.strip()
-                    for t in str(variable_types_list)
-                    .strip("()[]")
-                    .replace(";", ",")
-                    .split(",")
-                    if t.strip()
-                ]
-                if isinstance(variable_types_list, str)
-                else list(variable_types_list)
-            )
+            raw = variable_types_list
+            if isinstance(raw, str):
+                s = raw.strip().strip("[]()")
+                parts = [p for p in s.replace(";", ",").split(",")]
+            else:
+                parts = list(raw)
+            tokens: List[str] = []
+            for p in parts:
+                item = str(p).strip().strip('"').strip("'")
+                if item:
+                    tokens.append(item)
             vt_map: Dict[int, str] = {}
             for i, t in enumerate(tokens):
-                t_l = str(t).lower()
+                t_l = t.lower()
                 if t_l.startswith("cat"):
                     vt_map[i] = "categorical"
                 elif t_l.startswith("int"):
                     vt_map[i] = "integer"
+                elif (
+                    t_l.startswith("cont")
+                    or t_l.startswith("float")
+                    or t_l.startswith("real")
+                ):
+                    vt_map.setdefault(i, "continuous")
             if len(vt_map) > 0:
                 self.variable_types = vt_map
 
@@ -179,12 +186,20 @@ class EURAcqfV5(AcquisitionFunction):
         self._y_train_np = y_np.copy()
         self._n_features = X_np.shape[1]
 
-        # Fit linear ΔVar calculator
-        self.gp_calculator.fit(X_np, y_np, self._interaction_terms)
-
-        if self._var_initial is None:
-            self._var_initial = self.gp_calculator.get_parameter_variance()
-        self._var_current = self.gp_calculator.get_parameter_variance()
+        # Fit linear ΔVar calculator (best-effort; ANOVA/ordinal paths不依赖该项)
+        try:
+            self.gp_calculator.fit(X_np, y_np, self._interaction_terms)
+            if self._var_initial is None:
+                self._var_initial = self.gp_calculator.get_parameter_variance()
+            self._var_current = self.gp_calculator.get_parameter_variance()
+        except Exception as e:
+            logger.warning(
+                f"GPVarianceCalculator.fit failed: {e}. Proceeding without ΔVar stats."
+            )
+            # 允许继续运行（ordinal/EURAnovaPair 不依赖 ΔVar）
+            if self._var_initial is None:
+                self._var_initial = None
+            self._var_current = None
         self._fitted = True
 
     def _ensure_fresh_data(self) -> None:
@@ -391,15 +406,50 @@ class EURAcqfV5(AcquisitionFunction):
             }
 
         X_np = X_can_t.detach().cpu().numpy()
-        cov_np = compute_coverage_batch(
-            X_np,
-            self._X_train_np,
-            variable_types=vt,
-            ranges=None,
-            method=self.coverage_method,
-        )
-        cov_t = torch.from_numpy(cov_np).to(dtype=X_can_t.dtype, device=X_can_t.device)
-        return cov_t
+        # Basic shape diagnostics
+        try:
+            d_can = X_np.shape[1]
+            d_hist = self._X_train_np.shape[1]
+        except Exception:
+            d_can = d_hist = -1
+
+        if d_can != d_hist and d_can != -1 and d_hist != -1:
+            logger.warning(
+                f"Coverage shape mismatch: candidates dim={d_can}, history dim={d_hist}. Using zeros coverage."
+            )
+            return torch.zeros(
+                X_np.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+            )
+
+        if vt is not None and d_can >= 0:
+            bad_keys = [k for k in vt.keys() if k < 0 or k >= d_can]
+            if bad_keys:
+                logger.warning(
+                    f"variable_types indices out of range for dim={d_can}: {bad_keys}. Ignoring those entries."
+                )
+                vt = {k: v for k, v in vt.items() if 0 <= k < d_can}
+
+        try:
+            cov_np = compute_coverage_batch(
+                X_np,
+                self._X_train_np,
+                variable_types=vt,
+                ranges=None,
+                method=self.coverage_method,
+            )
+            cov_t = torch.from_numpy(cov_np).to(
+                dtype=X_can_t.dtype, device=X_can_t.device
+            )
+            return cov_t
+        except Exception as e:
+            logger.warning(
+                f"compute_coverage_batch failed: {e}. X_candidates shape={X_np.shape}, "
+                f"X_sampled shape={getattr(self._X_train_np, 'shape', None)}, method={self.coverage_method}, "
+                f"vt_keys={list(vt.keys()) if vt else None}. Using zeros coverage."
+            )
+            return torch.zeros(
+                X_np.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+            )
 
     # ---------- forward ----------
     @t_batch_mode_transform()
@@ -449,7 +499,8 @@ class EURAcqfV5(AcquisitionFunction):
         # Per-batch standardization to similar scales
         def _stdz(x: torch.Tensor) -> torch.Tensor:
             mu = x.mean()
-            sd = x.std()
+            # Avoid NaN for batch size = 1 by using unbiased=False
+            sd = x.std(unbiased=False)
             return (x - mu) / (sd + EPS)
 
         info_n = _stdz(info_t)
