@@ -183,119 +183,49 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self.tau_n_max = int(tau_n_max)
         self._current_gamma: float = gamma
 
-        # 交互对解析（增强版：自动去重并保持首次出现顺序）
+        # 交互对解析
         self._pairs: List[Tuple[int, int]] = []
         if interaction_pairs is not None:
-            self._pairs = self._parse_interaction_pairs(interaction_pairs)
+            if isinstance(interaction_pairs, str):
+                seq: List[Union[str, Tuple[int, int]]] = [interaction_pairs]
+            else:
+                seq = list(interaction_pairs)
+            for it in seq:
+                if isinstance(it, (list, tuple)) and len(it) == 2:
+                    i, j = int(it[0]), int(it[1])
+                    if i != j:
+                        self._pairs.append((min(i, j), max(i, j)))
+                else:
+                    s = str(it).strip()
+                    if (s.startswith('"') and s.endswith('"')) or (
+                        s.startswith("'") and s.endswith("'")
+                    ):
+                        s = s[1:-1]
+                    pair_strs: List[str]
+                    if ";" in s:
+                        pair_strs = [p for p in s.split(";") if p.strip()]
+                    elif " " in s and "," in s:
+                        pair_strs = [p for p in s.split() if p.strip()]
+                    else:
+                        pair_strs = [s]
+                    for ps in pair_strs:
+                        if "," in ps:
+                            toks = ps.split(",")
+                        elif "|" in ps:
+                            toks = ps.split("|")
+                        else:
+                            toks = [ps]
+                        if len(toks) >= 2:
+                            t0 = toks[0].strip().strip('"').strip("'")
+                            t1 = toks[1].strip().strip('"').strip("'")
+                            if t0 != "" and t1 != "":
+                                i, j = int(t0), int(t1)
+                                if i != j:
+                                    self._pairs.append((min(i, j), max(i, j)))
 
         # 分量缓存（调试用）
         self._last_main: Optional[torch.Tensor] = None
         self._last_pair: Optional[torch.Tensor] = None
-
-    def _parse_interaction_pairs(
-        self, interaction_pairs: Union[str, Sequence[Union[str, Tuple[int, int]]]]
-    ) -> List[Tuple[int, int]]:
-        """【增强版】解析交互对输入，自动去重并保持首次出现顺序
-
-        支持格式：
-        - [(0,1), (2,3)]           # 元组列表
-        - "0,1; 2,3"              # 分号分隔
-        - ["0,1", "2|3"]          # 混合分隔符
-
-        关键改进：
-        1. 使用 set 进行 O(1) 查重（保持顺序）
-        2. 统一的 _add_pair 内部函数（DRY原则）
-        3. 详细的解析失败警告
-        4. 完全向后兼容原有格式
-
-        Returns:
-            去重后的交互对列表（保持首次出现顺序）
-        """
-        parsed = []
-        seen = set()  # 用于 O(1) 查重
-        duplicate_count = 0
-
-        # 统一转为列表
-        seq = (
-            [interaction_pairs]
-            if isinstance(interaction_pairs, str)
-            else list(interaction_pairs)
-        )
-
-        # ✅ 提取去重逻辑为内部函数（提高可维护性）
-        def _add_pair(i: int, j: int) -> None:
-            """添加交互对（自动规范化和去重）"""
-            nonlocal duplicate_count
-            if i == j:
-                return  # 跳过自环
-
-            pair = (min(i, j), max(i, j))
-            if pair not in seen:
-                seen.add(pair)
-                parsed.append(pair)
-            else:
-                duplicate_count += 1
-
-        for it in seq:
-            try:
-                # 类型1：元组/列表
-                if isinstance(it, (list, tuple)) and len(it) == 2:
-                    _add_pair(int(it[0]), int(it[1]))
-                    continue
-
-                # 类型2：字符串
-                s = str(it).strip().strip('"').strip("'")
-
-                # 分割分隔符
-                if ";" in s:
-                    pair_strs = s.split(";")
-                elif " " in s and "," in s:
-                    pair_strs = s.split()
-                else:
-                    pair_strs = [s]
-
-                for ps in pair_strs:
-                    ps = ps.strip()
-                    if not ps:
-                        continue
-
-                    # 解析单个对
-                    if "," in ps:
-                        parts = ps.split(",")
-                    elif "|" in ps:
-                        parts = ps.split("|")
-                    else:
-                        import warnings
-
-                        warnings.warn(
-                            f"无法解析交互对格式: '{ps}' (需要包含 ',' 或 '|')"
-                        )
-                        continue
-
-                    if len(parts) >= 2:
-                        try:
-                            i = int(parts[0].strip().strip('"').strip("'"))
-                            j = int(parts[1].strip().strip('"').strip("'"))
-                            _add_pair(i, j)  # ✅ 使用统一的添加函数
-                        except ValueError as e:
-                            import warnings
-
-                            warnings.warn(f"无法解析交互对索引: '{ps}' (错误: {e})")
-
-            except Exception as e:
-                import warnings
-
-                warnings.warn(f"解析交互对时出错: {it}, 错误: {e}")
-
-        # 用户友好提示
-        if duplicate_count > 0:
-            import warnings
-
-            warnings.warn(
-                f"交互对输入包含 {duplicate_count} 个重复项，已自动去重（保持首次出现顺序）"
-            )
-
-        return parsed
 
     # ---- transforms & type inference ----
     def _get_param_transforms(self):
@@ -601,14 +531,7 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             return 1.0
 
     def _extract_parameter_variances_laplace(self) -> Optional[torch.Tensor]:
-        """【改进版】使用Laplace近似提取参数方差
-
-        关键改进：
-        1. 使用 eval() 模式避免 Dropout/BatchNorm 影响
-        2. 只计算一次 posterior 和 NLL（10-20x 性能提升）
-        3. 显式梯度清理防止累积
-        4. finally 块确保异常安全的模式恢复
-        """
+        """使用Laplace近似提取参数方差（与v1相同）"""
         try:
             if (
                 not hasattr(self.model, "train_inputs")
@@ -630,56 +553,37 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             if len(params_to_estimate) == 0:
                 return None
 
-            # 【关键改进1】保存原始模式，统一在外部设置
-            original_mode = self.model.training
+            param_vars = []
 
-            try:
-                self.model.eval()  # 使用 eval 模式避免随机性
+            for param in params_to_estimate:
+                try:
+                    param.requires_grad_(True)
+                    self.model.train()
+                    with torch.enable_grad():
+                        posterior = self.model.posterior(X_train)
+                        mean = posterior.mean.squeeze(-1)
+                        variance = posterior.variance.squeeze(-1)
+                        nll = 0.5 * torch.sum(
+                            (y_train.squeeze() - mean) ** 2 / (variance + EPS)
+                        )
 
-                param_vars = []
+                    grad = torch.autograd.grad(
+                        nll,
+                        param,
+                        create_graph=False,
+                        allow_unused=True,
+                        retain_graph=True,
+                    )[0]
 
-                # 【关键改进2】只计算一次 posterior 和 NLL
-                with torch.enable_grad():
-                    posterior = self.model.posterior(X_train)
-                    mean = posterior.mean.squeeze(-1)
-                    variance = posterior.variance.squeeze(-1)
-                    nll = 0.5 * torch.sum(
-                        (y_train.squeeze() - mean) ** 2 / (variance + EPS)
-                    )
-
-                # 【关键改进3】分别计算每个参数的梯度，不保留计算图
-                for i, param in enumerate(params_to_estimate):
-                    try:
-                        # 清理之前的梯度
-                        if param.grad is not None:
-                            param.grad = None
-
-                        # 最后一个参数不需要 retain_graph
-                        is_last = i == len(params_to_estimate) - 1
-
-                        grad = torch.autograd.grad(
-                            nll,
-                            param,
-                            create_graph=False,
-                            allow_unused=True,
-                            retain_graph=(not is_last),  # 【关键】只在非最后一个时保留
-                        )[0]
-
-                        if grad is not None:
-                            grad_norm = torch.abs(grad.flatten()).mean() + EPS
-                            param_var = 1.0 / grad_norm
-                            param_vars.append(
-                                param_var.expand_as(param).flatten().detach()
-                            )
-                        else:
-                            param_vars.append(torch.ones_like(param).flatten())
-
-                    except Exception:
+                    if grad is not None:
+                        grad_norm = torch.abs(grad.flatten()).mean() + EPS
+                        param_var = 1.0 / grad_norm
+                        param_vars.append(param_var.expand_as(param).flatten())
+                    else:
                         param_vars.append(torch.ones_like(param).flatten())
 
-            finally:
-                # 【关键改进4】确保恢复原始模式（异常安全）
-                self.model.train(original_mode)
+                except Exception:
+                    param_vars.append(torch.ones_like(param).flatten())
 
             if len(param_vars) == 0:
                 return None
