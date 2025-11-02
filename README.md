@@ -1,3 +1,129 @@
+## EUR ANOVA 系列采集函数（v1 / v2）
+
+本目录包含两个相关的采集函数实现：
+
+- `EURAnovaPairAcqf`（文件：`acquisition_function_anova.py`）——原始实现（v1）。
+- `EURAnovaPairAcqf_v2`（文件：`acquisition_function_anova_v2.py`）——改进实现（v2），对混合变量类型（分类/整数/连续）与序数熵计算做了健壮性改进，并加入动态 γ_t 权重。
+
+下面为这两个类中可通过 INI（或以 Config 注册/注入）配置的参数清单与中文说明，按类分组。表格列出参数名、默认值、类型与简短说明，以及在 INI 中可接受的写法示例。
+
+---
+
+### 共同/相似参数（v1 与 v2 都有）
+
+| 参数 | 默认 | 类型 | 说明 | INI 示例 |
+|---|---:|---|---|---|
+| `gamma` | 0.3 | float | 覆盖项（coverage）与信息项（information）融合时的权重（当未启用动态 γ_t 时使用） | `gamma = 0.3` |
+| `main_weight` | 0.5 | float | 主效应（main effect）在信息融合中的权重 | `main_weight = 0.5` |
+| `pair_weight` | 1.0 | float | 交互项（pair interaction）原始权重（λ_t 未缩放时参考） | `pair_weight = 1.0` |
+| `use_dynamic_lambda` | True | bool | 是否启用基于参数不确定性的动态 λ_t（用于交互权重随训练进展调整） | `use_dynamic_lambda = true` |
+| `tau1` | 0.7 | float | 动态 λ_t 的高阈值（r_t > tau1 时偏向主效应） | `tau1 = 0.7` |
+| `tau2` | 0.3 | float | 动态 λ_t 的低阈值（r_t < tau2 时偏重交互） | `tau2 = 0.3` |
+| `lambda_min` | 0.1 | float | 动态 λ 的最小值 | `lambda_min = 0.1` |
+| `lambda_max` | 1.0 | float | 动态 λ 的最大值 | `lambda_max = 1.0` |
+| `interaction_pairs` | None | list/str | 指定要计算的交互对。可以是字符串或序列，支持多种分隔格式（如 `"0,1;1,2"`、`"0|1"`、或真正的列表）。示例见下。 | `interaction_pairs = "0,1;2,3"` |
+| `local_jitter_frac` | 0.1 | float | 局部扰动尺度，按训练数据范围的比例决定扰动 σ | `local_jitter_frac = 0.1` |
+| `local_num` | 4 | int | 每种扰动类型的采样数（局域样本数），影响计算开销 | `local_num = 4` |
+| `variable_types` | None | dict | 可直接传入字典 {index: "categorical"/"integer"/"continuous"}，用于覆盖自动推断 | 参见下文 |
+| `variable_types_list` | None | list 或 str | 较方便的 INI 写法，按维度顺序给出类型标记（如 `[categorical, integer, continuous,...]` 或 `"categorical, integer, continuous"`） | `variable_types_list = [categorical, integer, continuous, categorical, continuous, integer]` |
+| `coverage_method` | "min_distance" | str | 覆盖度量方法，传入底层 `compute_coverage_batch` 的 method 参数 | `coverage_method = min_distance` |
+| `debug_components` | False | bool/str | 打开后会把中间分解量（主/交互/信息/覆盖）缓存到对象的属性，便于调试/导出 | `debug_components = true` |
+
+注意：`variable_types_list` 与 `variable_types` 的优先级为：明确定义的 `variable_types` dict 优先，若未提供则尝试解析 `variable_types_list`（字符串或列表格式）。如果二者都缺失，类会尝试从模型中的 transforms 自动推断（若可用）。
+
+---
+
+### v1：`EURAnovaPairAcqf` 的专属/额外参数
+
+| 参数 | 默认 | 说明 |
+|---|---:|---|
+| `coverage_method` | "min_distance" | 覆盖计算方法（同上，v1/v2 共用） |
+| `local_num` | 4 | 局部扰动样本数（v1 与 v2 相同） |
+
+v1 的实现中，局部扰动由 `_make_local` 产生，分类/整数维度在 v1 中被当作连续域扰动（即用高斯扰动）。这在混合变量空间会产生不合法的类别值，可能需要在外层配置 `variable_types` 并在 `PoolBasedGenerator` 中保证合法性，或直接使用 v2 替代。
+
+---
+
+### v2：`EURAnovaPairAcqf_v2` 的专属/新增参数
+
+| 参数 | 默认 | 类型 | 说明 |
+|---|---:|---:|---|
+| `use_dynamic_gamma` | True | bool | 是否启用动态 γ_t（覆盖/信息融合权重随训练样本数/r_t 调整） |
+| `gamma_max` | 0.5 | float | 动态 γ 的上界（训练样本很小时的偏好覆盖） |
+| `gamma_min` | 0.1 | float | 动态 γ 的下界（训练样本较多时的偏好信息） |
+| `tau_n_min` | 3 | int | 样本数下限阈值（用于 γ_t 动态计算） |
+| `tau_n_max` | 40 | int | 样本数上限阈值（用于 γ_t 动态计算） |
+
+v2 的关键改进是 `_make_local_hybrid`：对于分类变量直接从训练集的 unique 值采样，整数扰动后舍入并夹值，连续按高斯扰动，从而更好地匹配池中真实数据分布。
+
+---
+
+### INI 写法建议与示例
+
+在 experiment 的 INI 中，你可以在对应的 generator / acquisition section 指定这些参数。例如：
+
+```
+[EURAnovaPairAcqf]
+gamma = 0.25
+main_weight = 0.4
+pair_weight = 1.0
+use_dynamic_lambda = true
+tau1 = 0.8
+tau2 = 0.2
+lambda_min = 0.05
+lambda_max = 1.0
+interaction_pairs = "0,1;2,3"
+local_jitter_frac = 0.08
+local_num = 6
+variable_types_list = [categorical, integer, continuous, categorical, continuous, integer]
+debug_components = false
+```
+
+或针对 v2：
+
+```
+[EURAnovaPairAcqf_v2]
+gamma = 0.3
+use_dynamic_gamma = true
+gamma_max = 0.6
+gamma_min = 0.1
+tau_n_min = 5
+tau_n_max = 60
+variable_types_list = categorical, integer, continuous, categorical, continuous, integer
+```
+
+注意：INI 中的字符串/列表解析在 `Config` 层会尝试把 `variable_types_list` 解析为字符串或序列（实现里对字符串做了拆分）。若遇到解析问题，可直接在运行脚本中把一个 Python 字典或列表传递给构造函数。
+
+---
+
+### 诊断建议（为什么你的 `data/*.csv` 需要正确类型声明）
+
+- v1 将分类/整数当作连续扰动时，局部扰动会产生不合法的类别值（例如对字符串类别做 float 高斯扰动），这会导致当你把池（pool）点与 CSV 行匹配或将离散值回填到 `y` 时出现大量 mismatch，从而触发回退逻辑（例如将所有未匹配事件回填为 3）。
+- v2 通过 `_make_local_hybrid` 修复了这一问题：分类按训练集 unique 值采样，整数扰动后舍入并截断，连续按高斯扰动，从而更好地匹配池中真实数据分布。
+
+因此：
+
+- 对混合类型数据强烈建议使用 `EURAnovaPairAcqf_v2`，并在 INI 中通过 `variable_types_list` 或 `variable_types` 明确声明每列的类型（或确保模型的 transforms 能被推断出类型）。
+- 如果继续使用 v1，请确保数据与扰动/覆盖策略一致，或把 `local_num` 降低以节省计算并减少产生非法值的概率。
+
+---
+
+### 我可以为你做的改动（可选）
+
+1. 在 `exp_test/*/config_v*.ini` 中把 `variable_types_list` 显式写好（按照你 CSV 中每列的真实类型），并把 generator 的 `acqf` 指向 `EURAnovaPairAcqf_v2`（推荐）；
+2. 修改 `run_server.py` 中的 pool 加载逻辑，使其使用 pandas.Categorical / factorize 来编码类别，避免 hash 导致的不一致；
+3. 把回填逻辑改为先尝试精确/近似匹配，再采用最近邻回退，并优先使用 CSV 中 `_y_cont`（若存在）来离散化标签。
+
+告诉我你要我先做哪一步（我建议先把 `variable_types_list` 明确并切换到 v2，然后把回填逻辑改为 nearest-neighbor 回退并利用 `_y_cont`），我会按步骤实现并运行验证。
+
+---
+
+文件位置：
+
+- `extensions/dynamic_eur_acquisition/acquisition_function_anova.py`  (v1)
+- `extensions/dynamic_eur_acquisition/acquisition_function_anova_v2.py` (v2)
+- 本 README：`extensions/dynamic_eur_acquisition/README.md`
+
 # Dynamic EUR Acquisition Function (V4)# Dynamic EUR Acquisition Function
 
 一个用于AEPsych框架的自适应采集函数，专门用于分类变量和混合类型变量的贝叶斯优化。一个用于分类变量主动学习的动态采集函数实现，专注于最大化主效应和交互效应估计精度。
