@@ -172,6 +172,19 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self.tau2 = float(tau2)
         self.lambda_min = float(lambda_min)
         self.lambda_max = float(lambda_max)
+
+        # ✅ 参数验证（防止配置错误）
+        if self.tau1 <= self.tau2:
+            raise ValueError(
+                f"tau1 must be > tau2 for proper dynamic lambda weighting, "
+                f"got tau1={self.tau1}, tau2={self.tau2}"
+            )
+        if self.lambda_max < self.lambda_min:
+            raise ValueError(
+                f"lambda_max must be >= lambda_min, "
+                f"got lambda_max={self.lambda_max}, lambda_min={self.lambda_min}"
+            )
+
         self._initial_param_vars: Optional[torch.Tensor] = None
         self._current_lambda: float = self.lambda_max
 
@@ -181,6 +194,19 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self.gamma_min = float(gamma_min)
         self.tau_n_min = int(tau_n_min)
         self.tau_n_max = int(tau_n_max)
+
+        # ✅ 参数验证（防止配置错误）
+        if self.gamma_max < self.gamma_min:
+            raise ValueError(
+                f"gamma_max must be >= gamma_min, "
+                f"got gamma_max={self.gamma_max}, gamma_min={self.gamma_min}"
+            )
+        if self.tau_n_max <= self.tau_n_min:
+            raise ValueError(
+                f"tau_n_max must be > tau_n_min for proper sample-based gamma adjustment, "
+                f"got tau_n_max={self.tau_n_max}, tau_n_min={self.tau_n_min}"
+            )
+
         self._current_gamma: float = gamma
 
         # 交互对解析（增强版：自动去重并保持首次出现顺序）
@@ -360,17 +386,42 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             self._maybe_infer_variable_types()
 
     def _precompute_categorical_values(self) -> None:
-        """预计算每个分类维的unique值"""
+        """预计算每个分类维的unique值（增强版：详细错误报告）"""
         if self._X_train_np is None or self.variable_types is None:
             return
-        try:
-            for dim_idx, vtype in self.variable_types.items():
-                if vtype == "categorical" and 0 <= dim_idx < self._X_train_np.shape[1]:
-                    self._unique_vals_dict[dim_idx] = np.unique(
-                        self._X_train_np[:, dim_idx]
-                    )
-        except Exception:
-            pass
+
+        n_dims = self._X_train_np.shape[1]
+        failed_dims = []
+
+        for dim_idx, vtype in self.variable_types.items():
+            try:
+                if vtype == "categorical":
+                    # 边界检查
+                    if not (0 <= dim_idx < n_dims):
+                        failed_dims.append(
+                            (dim_idx, f"index out of range [0, {n_dims})")
+                        )
+                        continue
+
+                    unique_vals = np.unique(self._X_train_np[:, dim_idx])
+
+                    # 空值检查
+                    if len(unique_vals) == 0:
+                        failed_dims.append((dim_idx, "no valid values"))
+                        continue
+
+                    self._unique_vals_dict[dim_idx] = unique_vals
+
+            except Exception as e:
+                failed_dims.append((dim_idx, str(e)))
+
+        # 仅在有失败时警告（汇总报告）
+        if failed_dims:
+            import warnings
+
+            warnings.warn(
+                f"预计算分类值失败的维度: {failed_dims}，这些维度将保持原值（无局部探索）"
+            )
 
     # ---- 基础信息度量：序数用熵，回归用方差 ----
     def _metric(self, X_can_t: torch.Tensor) -> torch.Tensor:
@@ -451,6 +502,7 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         - 分类维：从unique_vals直接采样（100%合法）
         - 整数维：高斯扰动后舍入+夹值
         - 连续维：保持原有高斯扰动
+        - 降级策略：分类维失败时保持原值（避免非法值）
         """
         B, d = X_can_t.shape
         rng = self._feature_ranges()
@@ -465,14 +517,31 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         # 构造 (B, local_num, d)
         base = X_can_t.unsqueeze(1).repeat(1, self.local_num, 1)
 
+        # 首次警告集合（避免重复警告）
+        if not hasattr(self, "_categorical_fallback_warned"):
+            self._categorical_fallback_warned = set()
+
         # 按维类型处理
         for k in dims:
             vt = self.variable_types.get(k) if self.variable_types else None
 
-            if vt == "categorical" and k in self._unique_vals_dict:
-                # 【关键】分类：离散采样（完全合法）
-                unique_vals = self._unique_vals_dict[k]
-                if len(unique_vals) > 0:
+            if vt == "categorical":
+                unique_vals = self._unique_vals_dict.get(k)
+
+                # 【关键】安全检查：unique值是否可用
+                if unique_vals is None or len(unique_vals) == 0:
+                    # 【降级策略】保持原值（最安全，避免生成非法分类值）
+                    if k not in self._categorical_fallback_warned:
+                        import warnings
+
+                        warnings.warn(
+                            f"分类维 {k} 的unique值未找到，保持原值（该维度无探索贡献）"
+                        )
+                        self._categorical_fallback_warned.add(k)
+                    # base[:, :, k] 保持不变（即 X_can_t[:, k] 的重复）
+                    continue
+                else:
+                    # 【正常路径】离散采样（完全合法）
                     samples = np.random.choice(unique_vals, size=(B, self.local_num))
                     base[:, :, k] = torch.from_numpy(samples).to(
                         dtype=X_can_t.dtype, device=X_can_t.device
