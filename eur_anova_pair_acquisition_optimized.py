@@ -101,6 +101,8 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
         gamma_min: float = 0.1,
         tau_n_min: int = 3,
         tau_n_max: int = 40,
+        # 随机种子控制（确保确定性行为）
+        random_seed: Optional[int] = 42,
         # 调试
         debug_components: Union[bool, str] = False,
     ) -> None:
@@ -217,6 +219,9 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
             )
 
         self._current_gamma: float = gamma
+
+        # 随机种子控制
+        self.random_seed = random_seed
 
         # 交互对解析（增强版：自动去重并保持首次出现顺序）
         self._pairs: List[Tuple[int, int]] = []
@@ -893,6 +898,10 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
     # ---- 覆写 forward，执行分解式信息 + 覆盖 ----
     @t_batch_mode_transform()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
+        # 设置随机种子确保确定性行为
+        if self.random_seed is not None:
+            np.random.seed(self.random_seed)
+
         self._ensure_fresh_data()
         if (
             not self._fitted
