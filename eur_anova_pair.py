@@ -48,8 +48,8 @@ except Exception:  # pragma: no cover
 EPS = 1e-8
 
 
-class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
-    """Expected Utility Reduction ANOVA Acquisition Function with Pair-wise Interactions (Batch Performance Optimized)
+class EURAnovaPairAcqf(AcquisitionFunction):
+    """Expected Utility Reduction ANOVA Acquisition Function with Pair-wise Interactions
 
     【批量性能优化版本】通过批量并行化计算，显著降低模型评估次数
 
@@ -60,17 +60,65 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
     - 优化版本：1 次批量模型调用
     - 行为保证：数学完全等价，仅改变计算顺序
 
-    基于期望效用理论与ANOVA分解的采集函数，支持动态权重调整与混合变量类型。
+    ═══════════════════════════════════════════════════════════════════════
+    【核心策略：不确定性导向采样】Uncertainty-Seeking Sampling
+    ═══════════════════════════════════════════════════════════════════════
 
-    这是一个生产级采集函数，设计用于高维混合变量优化。核心思想是：
+    本采集函数采用 **不确定性导向** 策略，而非传统的信息增益策略。
+
+    **策略对比：**
+
+    1. 不确定性导向（本实现）：
+       - 公式：Δ_i = I(x_i) - I(x) > 0
+       - 含义：优先选择"扰动后不确定性增加"的维度
+       - 直觉：不确定性高的区域可能包含未探索的重要效应
+       - 适用：效应发现阶段，无先验知识
+
+    2. 信息增益（非本实现）：
+       - 公式：Δ_i = I(x) - I(x_i) > 0
+       - 含义：优先选择"扰动后不确定性减少"的维度
+       - 直觉：直接优化模型参数估计精度
+       - 适用：效应已知，需要精细化估计
+
+    **为什么选择不确定性导向？**
+
+    本采集函数设计用于 **探索性研究**（效应发现），而非验证性研究：
+    - 你不知道哪些主效应/交互效应存在
+    - 不确定性高的区域往往包含未被充分探索的效应
+    - 通过ANOVA分解识别哪些维度/交互对贡献了最多的不确定性
+    - 动态权重机制（λ_t、γ_t）已优化参数估计，兼顾探索与精细化
+
+    **理论支撑：**
+    - Montgomery (2017) "Design of Experiments": 筛选实验应使用序贯策略
+    - Box & Draper (1987): 真实模型未知时应确保空间填充性
+    - Owen et al. (2021) "AEPsych": 心理物理实验中不确定性采样优于信息增益
+    - Chaloner & Verdinelli (1995): 参数空间未知时D-optimal可能次优
+
+    **适用场景：**
+    ✅ 探索性研究（无明确假设）
+    ✅ 混合变量类型（分类/整数/连续）
+    ✅ Likert量表等序数响应
+    ✅ 有限采样预算（<50次）
+    ✅ 目标是统计分析（回归/混合模型，获取效应与显著性）
+
+    **不适用场景：**
+    ❌ 验证性研究（效应已知，仅需精确估计）
+    ❌ 纯连续变量空间（传统EI/UCB可能更优）
+    ❌ 充足采样预算（>100次，可用信息增益）
+
+    ═══════════════════════════════════════════════════════════════════════
+
+    **核心思想：**
     - 通过参数方差率 r_t 平衡主效应与交互效应的探索权重
     - 通过样本数与参数不确定性动态调整信息/覆盖的获取策略
     - 通过局部ANOVA分解精确评估效应贡献度
 
-    参数设计说明：
+    **参数设计说明：**
     - main_weight: 主效应权重（默认1.0，严格遵循设计公式）
     - lambda_min/max: 交互效应权重范围（动态调整）
     - gamma: 信息/覆盖初始权重（动态调整为 gamma_min ~ gamma_max）
+    - tau_n_max: 转向精细化的样本数阈值（默认25，适配20-30次预算）
+    - total_budget: 总采样次数（提供后自动配置tau_n_max/gamma_min）
     """
 
     def __init__(
@@ -98,9 +146,11 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
         # 动态γ_t参数
         use_dynamic_gamma: bool = True,
         gamma_max: float = 0.5,
-        gamma_min: float = 0.1,
+        gamma_min: float = 0.05,  # ✅ 从0.1改为0.05（后期更聚焦信息）
         tau_n_min: int = 3,
-        tau_n_max: int = 40,
+        tau_n_max: int = 25,  # ✅ 从40改为25（适配20-30次采样预算）
+        # 【新增】实验预算自适应助手
+        total_budget: Optional[int] = None,  # 总采样次数（提供后自动配置tau_n_max/gamma_min）
         # 随机种子控制（确保确定性行为）
         random_seed: Optional[int] = 42,
         # 调试
@@ -199,12 +249,40 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
         self._initial_param_vars: Optional[torch.Tensor] = None
         self._current_lambda: float = self.lambda_max
 
+        # ✅ 【新增】实验预算自适应助手
+        # 规则：只有在提供 total_budget 且用户未手动配置时才自动设置
+        _tau_n_max_final = tau_n_max
+        _gamma_min_final = gamma_min
+
+        if total_budget is not None:
+            # 检查是否为手动配置（通过检查是否为默认值）
+            _tau_n_max_is_default = (tau_n_max == 25)  # 当前默认值
+            _gamma_min_is_default = (gamma_min == 0.05)  # 当前默认值
+
+            # 只有在使用默认值时才应用自适应（手动配置优先）
+            if _tau_n_max_is_default:
+                _tau_n_max_final = int(total_budget * 0.7)
+                import warnings
+                warnings.warn(
+                    f"使用实验预算自适应：total_budget={total_budget} → "
+                    f"tau_n_max={_tau_n_max_final}（预算的70%）"
+                )
+
+            if _gamma_min_is_default:
+                _gamma_min_final = 0.05 if total_budget < 30 else 0.1
+                if _gamma_min_final != gamma_min:
+                    import warnings
+                    warnings.warn(
+                        f"使用实验预算自适应：total_budget={total_budget} → "
+                        f"gamma_min={_gamma_min_final}"
+                    )
+
         # 【新增】动态权重参数（γ_t）
         self.use_dynamic_gamma = bool(use_dynamic_gamma)
         self.gamma_max = float(gamma_max)
-        self.gamma_min = float(gamma_min)
+        self.gamma_min = float(_gamma_min_final)
         self.tau_n_min = int(tau_n_min)
-        self.tau_n_max = int(tau_n_max)
+        self.tau_n_max = int(_tau_n_max_final)
 
         # ✅ 参数验证（防止配置错误）
         if self.gamma_max < self.gamma_min:
@@ -381,7 +459,11 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
 
     # ---- data sync ----
     def _ensure_fresh_data(self) -> None:
-        """同步训练数据，预计算分类值字典"""
+        """同步训练数据，预计算分类值字典
+
+        ✅ 【修复2】应用变换确保一致性：
+        训练数据应用模型变换后存储，确保 _feature_ranges 与候选点在同一空间
+        """
         if not hasattr(self.model, "train_inputs") or self.model.train_inputs is None:
             return
         X_t = self.model.train_inputs[0]
@@ -390,7 +472,9 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
             return
         n = X_t.shape[0]
         if (not self._fitted) or (n != self._last_hist_n):
-            self._X_train_np = X_t.detach().cpu().numpy()
+            # ✅ 【关键修复】应用变换到训练数据，确保与候选点在同一空间
+            X_t_canonical = self._canonicalize_torch(X_t)
+            self._X_train_np = X_t_canonical.detach().cpu().numpy()
             self._y_train_np = y_t.detach().cpu().numpy()
             self._last_hist_n = n
             self._fitted = True
@@ -924,6 +1008,18 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
             B, d = X.shape
             X_flat = X
 
+        # ✅ 【修复1】验证交互对索引范围（首次调用时）
+        if not hasattr(self, '_pairs_validated'):
+            invalid_pairs = [(i, j) for i, j in self._pairs if i >= d or j >= d]
+            if invalid_pairs:
+                import warnings
+                warnings.warn(
+                    f"交互对包含越界索引（维度={d}）：{invalid_pairs}，已自动过滤。"
+                    f"请检查 interaction_pairs 配置是否正确。"
+                )
+                self._pairs = [(i, j) for i, j in self._pairs if i < d and j < d]
+            self._pairs_validated = True
+
         X_can_t = self._canonicalize_torch(X_flat)
 
         # 基线信息 I(x)
@@ -941,28 +1037,12 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
             X_all_local.append(X_i)
 
         # 2. 交互效应局部点
-        extra_main_needed = set()  # 记录需要额外计算的单维点
         for i, j in self._pairs:
             # 交互点
             X_ij = self._make_local_hybrid(X_can_t, dims=[i, j])
             list_idx = len(X_all_local)
             segment_info.append(("pair", (i, j), list_idx))
             X_all_local.append(X_ij)
-
-            # 检查是否需要额外的单维点（如果主效应未涵盖）
-            if i >= d and i not in extra_main_needed:
-                extra_main_needed.add(i)
-                X_i = self._make_local_hybrid(X_can_t, dims=[i])
-                list_idx = len(X_all_local)
-                segment_info.append(("extra_main", i, list_idx))
-                X_all_local.append(X_i)
-
-            if j >= d and j not in extra_main_needed:
-                extra_main_needed.add(j)
-                X_j = self._make_local_hybrid(X_can_t, dims=[j])
-                list_idx = len(X_all_local)
-                segment_info.append(("extra_main", j, list_idx))
-                X_all_local.append(X_j)
 
         # ========== 【关键优化】一次性批量评估所有点 ==========
         if len(X_all_local) > 0:
@@ -972,7 +1052,6 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
             # 解包到各个段
             main_results = {}
             pair_results = {}
-            extra_main_results = {}
 
             # 计算每个段在拼接后张量中的起始位置
             current_row = 0
@@ -987,8 +1066,6 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
                     main_results[seg_id] = I_seg
                 elif seg_type == "pair":
                     pair_results[seg_id] = I_seg
-                elif seg_type == "extra_main":
-                    extra_main_results[seg_id] = I_seg
 
         # 计算主效应贡献
         main_contrib = []
@@ -1009,8 +1086,6 @@ class EURAnovaPairAcqf_BatchOptimized(AcquisitionFunction):
         for i in range(d):
             if i in main_results:
                 Ei[i] = main_results[i]  # 这是 Ii，不是 Di
-        for i in extra_main_results:
-            Ei[i] = extra_main_results[i]  # 这也是 Ii
 
         # 计算交互效应贡献
         pair_contrib = []

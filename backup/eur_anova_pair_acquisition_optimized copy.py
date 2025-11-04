@@ -1,4 +1,6 @@
 """
+251104晚，进行的备份，当前实现理论上已经基本可用
+
 EURAnovaPairAcqf: Expected Utility for ANOVA with Pair-wise Interactions
 
 基于Expected Utility (EUR) 理论与ANOVA分解的高阶采集函数，支持混合变量与动态权重调整。
