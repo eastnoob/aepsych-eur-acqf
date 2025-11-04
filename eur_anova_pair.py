@@ -147,9 +147,13 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         # 动态γ_t参数
         use_dynamic_gamma: bool = True,
         gamma_max: float = 0.5,
-        gamma_min: float = 0.05,  # ✅ 从0.1改为0.05（后期更聚焦信息）
+        gamma_min: Optional[
+            float
+        ] = None,  # ✅ 使用None作为哨兵值，自动配置时设为0.05/0.1
         tau_n_min: int = 3,
-        tau_n_max: int = 25,  # ✅ 从40改为25（适配20-30次采样预算）
+        tau_n_max: Optional[
+            int
+        ] = None,  # ✅ 使用None作为哨兵值，自动配置时设为budget*0.7
         # 【新增】实验预算自适应助手
         total_budget: Optional[
             int
@@ -252,42 +256,45 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         self._initial_param_vars: Optional[torch.Tensor] = None
         self._current_lambda: float = self.lambda_max
 
-        # ✅ 【新增】实验预算自适应助手
-        # 规则：只有在提供 total_budget 且用户未手动配置时才自动设置
-        _tau_n_max_final = tau_n_max
-        _gamma_min_final = gamma_min
+        # ✅ 【改进】实验预算自适应助手（使用哨兵值正确区分手动/自动配置）
+        # 规则：使用 None 作为哨兵值，只有传入 None 时才应用自适应
 
-        if total_budget is not None:
-            # 检查是否为手动配置（通过检查是否为默认值）
-            _tau_n_max_is_default = tau_n_max == 25  # 当前默认值
-            _gamma_min_is_default = gamma_min == 0.05  # 当前默认值
-
-            # 只有在使用默认值时才应用自适应（手动配置优先）
-            if _tau_n_max_is_default:
-                _tau_n_max_final = int(total_budget * 0.7)
+        # 处理 tau_n_max
+        if tau_n_max is None:
+            # 未手动配置，使用自适应或默认值
+            if total_budget is not None:
+                tau_n_max = int(total_budget * 0.7)
                 import warnings
 
                 warnings.warn(
                     f"使用实验预算自适应：total_budget={total_budget} → "
-                    f"tau_n_max={_tau_n_max_final}（预算的70%）"
+                    f"tau_n_max={tau_n_max}（预算的70%）"
                 )
+            else:
+                tau_n_max = 25  # 默认值
+        # else: 用户手动配置了 tau_n_max，保持用户值（即使 total_budget 也存在）
 
-            if _gamma_min_is_default:
-                _gamma_min_final = 0.05 if total_budget < 30 else 0.1
-                if _gamma_min_final != gamma_min:
-                    import warnings
+        # 处理 gamma_min
+        if gamma_min is None:
+            # 未手动配置，使用自适应或默认值
+            if total_budget is not None:
+                gamma_min = 0.05 if total_budget < 30 else 0.1
+                import warnings
 
-                    warnings.warn(
-                        f"使用实验预算自适应：total_budget={total_budget} → "
-                        f"gamma_min={_gamma_min_final}"
-                    )
+                warnings.warn(
+                    f"使用实验预算自适应：total_budget={total_budget} → "
+                    f"gamma_min={gamma_min}"
+                )
+            else:
+                gamma_min = 0.05  # 默认值
+        # else: 用户手动配置了 gamma_min，保持用户值（即使 total_budget 也存在）
 
         # 【新增】动态权重参数（γ_t）
         self.use_dynamic_gamma = bool(use_dynamic_gamma)
         self.gamma_max = float(gamma_max)
-        self.gamma_min = float(_gamma_min_final)
+        self.gamma_min = float(gamma_min)
         self.tau_n_min = int(tau_n_min)
-        self.tau_n_max = int(_tau_n_max_final)
+        self.tau_n_max = int(tau_n_max)
 
         # ✅ 参数验证（防止配置错误）
         if self.gamma_max < self.gamma_min:
