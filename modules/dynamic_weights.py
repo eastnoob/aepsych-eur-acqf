@@ -133,8 +133,29 @@ class DynamicWeightEngine:
 
         Laplace近似：Var[θ] ≈ 1 / |∇²_θ log p(θ|D)|
 
-        简化版本：用梯度范数的倒数近似Hessian的对角元素
+        ⚠️ 简化版本：用梯度范数的倒数近似Hessian的对角元素
         Var[θ_i] ≈ 1 / |∇_θi NLL|
+
+        【重要限制】：
+        1. **简化近似**：只使用一阶梯度而非完整Hessian矩阵
+           - 完整版：需计算O(P²)的二阶导数矩阵
+           - 简化版：仅计算O(P)的一阶梯度范数倒数
+           - 代价：可能低估参数间的协方差影响
+
+        2. **CPU执行**：当前实现在CPU上运行（autograd.grad不自动继承设备）
+           - GPU模型的梯度计算仍在GPU，但会自动转移到CPU
+           - Multi-GPU场景：只使用DataParallel主设备
+           - 性能：对于大模型（>1M参数），可能增加~100ms延迟
+
+        3. **内存占用**：循环计算每个参数的梯度
+           - 使用retain_graph=True保持计算图直到最后一个参数
+           - 峰值显存 ≈ 2× 单次forward显存
+           - 对于极大模型，考虑分批计算或禁用dynamic_lambda
+
+        【替代方案】：
+        - 如需完整Hessian：考虑使用Laplace库（laplace-torch）
+        - 如内存受限：设置use_dynamic_lambda=False使用固定λ
+        - 如速度优先：减小模型参数量或降低更新频率
 
         性能优化：
         1. 使用eval()模式避免Dropout/BN影响
@@ -144,7 +165,7 @@ class DynamicWeightEngine:
 
         Returns:
             (P,) 张量，P为参数总数
-            None if 提取失败
+            None if 提取失败（回退到r_t=1.0）
         """
         try:
             if (not hasattr(self.model, "train_inputs") or

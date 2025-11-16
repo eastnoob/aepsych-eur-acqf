@@ -53,6 +53,15 @@ class LocalSampler:
         self.local_num = local_num
         self.random_seed = random_seed
 
+        # 【修复】使用实例级 RNG（避免全局污染）
+        # 参考：https://numpy.org/doc/stable/reference/random/generator.html
+        if random_seed is not None:
+            self._np_rng = np.random.default_rng(random_seed)
+            # 同时设置 torch 随机种子（保证跨框架可复现）
+            torch.manual_seed(random_seed)
+        else:
+            self._np_rng = np.random.default_rng()
+
         # 数据缓存
         self._X_train_np: Optional[np.ndarray] = None
         self._unique_vals_dict: Dict[int, np.ndarray] = {}
@@ -132,10 +141,7 @@ class LocalSampler:
         Returns:
             (B * local_num, d) 扰动后的点
         """
-        # 设置随机种子
-        if self.random_seed is not None:
-            np.random.seed(self.random_seed)
-
+        # 【修复】移除全局 seed 调用，使用实例级 RNG
         B, d = X_can_t.shape
 
         # 获取特征范围
@@ -192,8 +198,8 @@ class LocalSampler:
                 self._categorical_fallback_warned.add(k)
             return base
         else:
-            # 离散采样（完全合法）
-            samples = np.random.choice(unique_vals, size=(B, self.local_num))
+            # 【修复】使用实例级 RNG（离散采样，完全合法）
+            samples = self._np_rng.choice(unique_vals, size=(B, self.local_num))
             base[:, :, k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
             )

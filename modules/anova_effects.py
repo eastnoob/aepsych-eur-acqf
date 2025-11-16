@@ -332,12 +332,22 @@ class ANOVAEffectEngine:
 
         # 3. 一次性批量评估（关键性能优化！）
         if len(X_all_local) > 0:
+            # 【修复】验证所有扰动点有相同的 local_num（确保假设成立）
+            local_num = X_all_local[0].shape[0] // B
+            for i, X_pert in enumerate(X_all_local):
+                actual_local_num = X_pert.shape[0] // B
+                if actual_local_num != local_num:
+                    raise AssertionError(
+                        f"ANOVA引擎假设所有effect的local_num一致，"
+                        f"但effect索引{i}的local_num={actual_local_num}，"
+                        f"与第一个effect的local_num={local_num}不符"
+                    )
+
             X_batch = torch.cat(X_all_local, dim=0)
             I_batch = self.metric_fn(X_batch)  # 只调用1次模型！
 
             # 解包结果
             raw_results = {}
-            local_num = X_all_local[0].shape[0] // B
             current_row = 0
 
             for indices, _ in segment_info:

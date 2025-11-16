@@ -62,7 +62,9 @@ class CoverageHelper:
             (B,) 覆盖度值（越大越好）
         """
         if self._X_train_np is None or self._X_train_np.shape[0] == 0:
-            return torch.zeros(
+            # 【修复】统一行为：无历史样本时返回最大覆盖（鼓励探索）
+            # 与 gower_distance.compute_coverage 的行为一致（返回1.0）
+            return torch.ones(
                 X_can_t.shape[0],
                 dtype=X_can_t.dtype,
                 device=X_can_t.device

@@ -324,7 +324,21 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             if tf is None:
                 return X
             return tf.transform(X)
-        except Exception:
+        except (AttributeError, RuntimeError) as e:
+            # 【修复】已知可接受的异常：记录警告但继续
+            warnings.warn(
+                f"Failed to apply model transforms: {e}. "
+                f"Using untransformed inputs (may affect performance).",
+                RuntimeWarning
+            )
+            return X
+        except Exception as e:
+            # 【修复】未知异常：记录详细trace后降级
+            warnings.warn(
+                f"Unexpected exception in _canonicalize_torch: {type(e).__name__}: {e}. "
+                f"This may indicate a bug. Falling back to untransformed inputs.",
+                RuntimeWarning
+            )
             return X
 
     # ========== 信息度量 ==========
