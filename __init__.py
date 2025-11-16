@@ -1,58 +1,48 @@
 """
-Dynamic EUR Acquisition Function (V4) for AEPsych.
+Dynamic EUR ANOVA Acquisition Functions for AEPsych.
 
-This package exposes the V4 EUR acquisition function and core utilities at the
-root level. Legacy variants (V1/V2/V3) and auxiliary generators are available
-under the `legacy/` subpackage to keep the root minimal while preserving
-optional compatibility.
+This package provides ANOVA-based acquisition functions with support for
+multi-order interactions, mixed-type variables, and dynamic weight adjustment.
+
+Core Components:
+- EURAnovaMultiAcqf: NEW! Multi-order interactions (main + 2nd + 3rd + ...)
+- EURAnovaPairAcqf: Legacy pair-wise interactions (backward compatible)
+- gower_distance: Distance calculation for mixed-type variables
+- compute_coverage_batch: Spatial coverage computation
+- GPVarianceCalculator: Gaussian Process variance estimation utilities
+
+Modular Architecture (NEW in v4.0):
+- modules.anova_effects: ANOVA effect engine (extensible to any order)
+- modules.ordinal_metrics: Ordinal model entropy calculation
+- modules.dynamic_weights: Adaptive weight system (λ_t, γ_t)
+- modules.local_sampler: Mixed-type local perturbation
+- modules.coverage: Coverage computation
+- modules.config_parser: Configuration parsing utilities
+- modules.diagnostics: Debugging and diagnostics tools
 """
 
-__version__ = "2.1.0"
+__version__ = "4.0.0"
 __author__ = "Fengxu Tian"
 
-# Core V4 exports
-from .acquisition_function_v4 import EURAcqfV4
+# Core exports
+from .eur_anova_multi import EURAnovaMultiAcqf  # NEW! Recommended
+from .eur_anova_pair import EURAnovaPairAcqf    # Legacy (backward compatible)
 from .gower_distance import gower_distance, compute_coverage_batch, compute_coverage
 from .gp_variance import GPVarianceCalculator
 
-# Optional legacy exports (best-effort; absent if legacy/ not present)
-try:  # pragma: no cover
-    from .legacy.acquisition_function import VarianceReductionWithCoverageAcqf
-except Exception:  # pragma: no cover
-    VarianceReductionWithCoverageAcqf = None  # type: ignore
-
-try:  # pragma: no cover
-    from .legacy.acquisition_function_v2 import EnhancedVarianceReductionAcqf
-except Exception:  # pragma: no cover
-    EnhancedVarianceReductionAcqf = None  # type: ignore
-
-try:  # pragma: no cover
-    from .legacy.acquisition_function_v3 import HardExclusionAcqf, CombinedAcqf
-except Exception:  # pragma: no cover
-    HardExclusionAcqf = None  # type: ignore
-    CombinedAcqf = None  # type: ignore
-
-try:  # pragma: no cover
-    from .legacy.hard_exclusion_generator import HardExclusionGenerator
-except Exception:  # pragma: no cover
-    HardExclusionGenerator = None  # type: ignore
+# Module exports (for advanced users)
+from . import modules
 
 __all__ = [
-    "EURAcqfV4",
+    # Main acquisition functions
+    "EURAnovaMultiAcqf",     # NEW! Use this for new projects
+    "EURAnovaPairAcqf",      # Legacy support
+    # Distance & Coverage
     "gower_distance",
     "compute_coverage_batch",
     "compute_coverage",
+    # Utilities
     "GPVarianceCalculator",
+    # Modules
+    "modules",
 ]
-
-# Conditionally extend __all__ with legacy symbols if available
-if VarianceReductionWithCoverageAcqf is not None:
-    __all__.append("VarianceReductionWithCoverageAcqf")
-if EnhancedVarianceReductionAcqf is not None:
-    __all__.append("EnhancedVarianceReductionAcqf")
-if HardExclusionAcqf is not None:
-    __all__.append("HardExclusionAcqf")
-if CombinedAcqf is not None:
-    __all__.append("CombinedAcqf")
-if HardExclusionGenerator is not None:
-    __all__.append("HardExclusionGenerator")
