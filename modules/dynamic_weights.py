@@ -141,6 +141,7 @@ class DynamicWeightEngine:
            - 完整版：需计算O(P²)的二阶导数矩阵
            - 简化版：仅计算O(P)的一阶梯度范数倒数
            - 代价：可能低估参数间的协方差影响
+           - ✅ **已修复**：现在使用完整 Gaussian NLL（包含 log(σ²) 项）
 
         2. **CPU执行**：当前实现在CPU上运行（autograd.grad不自动继承设备）
            - GPU模型的梯度计算仍在GPU，但会自动转移到CPU
@@ -201,7 +202,12 @@ class DynamicWeightEngine:
                     posterior = self.model.posterior(X_train)
                     mean = posterior.mean.squeeze(-1)
                     variance = posterior.variance.squeeze(-1)
+
+                    # 【修复】完整的 Gaussian NLL 包含 log(variance) 项
+                    # NLL = 0.5 * Σ[log(σ²) + (y-μ)²/σ²]
+                    # 之前缺少 log 项会减弱梯度对方差的响应
                     nll = 0.5 * torch.sum(
+                        torch.log(variance + EPS) +
                         (y_train.squeeze() - mean) ** 2 / (variance + EPS)
                     )
 

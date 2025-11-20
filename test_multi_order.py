@@ -32,9 +32,9 @@ def create_mock_model(n_dims=4, n_train=10):
 
 def test_main_only():
     """测试：只启用主效应"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("测试 1: 只启用主效应")
-    print("="*70)
+    print("=" * 70)
 
     from eur_anova_multi import EURAnovaMultiAcqf
 
@@ -45,12 +45,13 @@ def test_main_only():
         enable_main=True,
         enable_pairwise=False,  # 关闭二阶
         enable_threeway=False,  # 关闭三阶
-        debug_components=True
+        debug_components=True,
     )
 
     # 评估候选点
     X_candidates = torch.rand(5, 4, dtype=torch.float64)
-    scores = acqf(X_candidates)
+    # 在 BoTorch 中，acqf 应使用 (B, q, d) 的输入，该处 q=1
+    scores = acqf(X_candidates.unsqueeze(1))
 
     print(f"候选点数量: {X_candidates.shape[0]}")
     print(f"得分范围: [{scores.min():.4f}, {scores.max():.4f}]")
@@ -63,19 +64,19 @@ def test_main_only():
     print(f"二阶交互数: {diag['n_pairs']}")
     print(f"三阶交互数: {diag['n_triplets']}")
 
-    assert diag['enable_main'] == True
-    assert diag['enable_pairwise'] == False
-    assert diag['n_pairs'] == 0
-    assert diag['n_triplets'] == 0
+    assert diag["enable_main"] == True
+    assert diag["enable_pairwise"] == False
+    assert diag["n_pairs"] == 0
+    assert diag["n_triplets"] == 0
 
     print("✅ 测试通过！")
 
 
 def test_main_plus_pairwise():
     """测试：主效应 + 二阶交互"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("测试 2: 主效应 + 二阶交互")
-    print("="*70)
+    print("=" * 70)
 
     from eur_anova_multi import EURAnovaMultiAcqf
 
@@ -85,13 +86,13 @@ def test_main_plus_pairwise():
         model,
         enable_main=True,
         interaction_pairs=[(0, 1), (2, 3)],  # 两个二阶交互
-        enable_threeway=False,               # 关闭三阶
-        lambda_2=1.0,                        # 固定二阶权重
-        debug_components=True
+        enable_threeway=False,  # 关闭三阶
+        lambda_2=1.0,  # 固定二阶权重
+        debug_components=True,
     )
 
     X_candidates = torch.rand(5, 4, dtype=torch.float64)
-    scores = acqf(X_candidates)
+    scores = acqf(X_candidates.unsqueeze(1))
 
     print(f"候选点数量: {X_candidates.shape[0]}")
     print(f"得分范围: [{scores.min():.4f}, {scores.max():.4f}]")
@@ -101,18 +102,18 @@ def test_main_plus_pairwise():
     print(f"二阶交互: {diag['pairs']}")
     print(f"λ_2 权重: {diag['lambda_2']:.4f}")
 
-    assert diag['n_pairs'] == 2
-    assert (0, 1) in diag['pairs']
-    assert (2, 3) in diag['pairs']
+    assert diag["n_pairs"] == 2
+    assert (0, 1) in diag["pairs"]
+    assert (2, 3) in diag["pairs"]
 
     print("✅ 测试通过！")
 
 
 def test_full_three_way():
     """测试：主效应 + 二阶 + 三阶交互"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("测试 3: 主效应 + 二阶 + 三阶交互")
-    print("="*70)
+    print("=" * 70)
 
     from eur_anova_multi import EURAnovaMultiAcqf
 
@@ -124,12 +125,12 @@ def test_full_three_way():
         interaction_pairs=[(0, 1), (1, 2), (2, 3)],
         interaction_triplets=[(0, 1, 2)],  # 一个三阶交互
         lambda_2=1.0,
-        lambda_3=0.5,                      # 三阶权重
-        debug_components=True
+        lambda_3=0.5,  # 三阶权重
+        debug_components=True,
     )
 
     X_candidates = torch.rand(5, 4, dtype=torch.float64)
-    scores = acqf(X_candidates)
+    scores = acqf(X_candidates.unsqueeze(1))
 
     print(f"候选点数量: {X_candidates.shape[0]}")
     print(f"得分范围: [{scores.min():.4f}, {scores.max():.4f}]")
@@ -141,8 +142,8 @@ def test_full_three_way():
     print(f"λ_2 权重: {diag['lambda_2']:.4f}")
     print(f"λ_3 权重: {diag['lambda_3']:.4f}")
 
-    assert diag['n_triplets'] == 1
-    assert (0, 1, 2) in diag['triplets']
+    assert diag["n_triplets"] == 1
+    assert (0, 1, 2) in diag["triplets"]
 
     # 打印完整诊断
     acqf.print_diagnostics()
@@ -152,14 +153,14 @@ def test_full_three_way():
 
 def test_config_parsing():
     """测试：配置解析"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("测试 4: 配置解析")
-    print("="*70)
+    print("=" * 70)
 
     from modules.config_parser import (
         parse_interaction_pairs,
         parse_interaction_triplets,
-        parse_variable_types
+        parse_variable_types,
     )
 
     # 测试交互对解析
@@ -185,15 +186,15 @@ def test_config_parsing():
 
 def test_anova_engine_independently():
     """测试：ANOVA引擎独立性"""
-    print("\n" + "="*70)
+    print("\n" + "=" * 70)
     print("测试 5: ANOVA引擎独立性")
-    print("="*70)
+    print("=" * 70)
 
     from modules.anova_effects import (
         ANOVAEffectEngine,
         MainEffect,
         PairwiseEffect,
-        ThreeWayEffect
+        ThreeWayEffect,
     )
 
     # 模拟信息度量函数
@@ -210,9 +211,10 @@ def test_anova_engine_independently():
 
     # 定义效应
     effects = [
-        MainEffect(0), MainEffect(1),
+        MainEffect(0),
+        MainEffect(1),
         PairwiseEffect(0, 1),
-        ThreeWayEffect(0, 1, 2)
+        ThreeWayEffect(0, 1, 2),
     ]
 
     X_test = torch.rand(5, 4)
@@ -223,25 +225,25 @@ def test_anova_engine_independently():
     print(f"贡献数量: {len(results['contributions'])}")
     print(f"聚合阶数: {list(results['aggregated'].keys())}")
 
-    assert 'order_1' in results['aggregated']
-    assert 'order_2' in results['aggregated']
-    assert 'order_3' in results['aggregated']
+    assert "order_1" in results["aggregated"]
+    assert "order_2" in results["aggregated"]
+    assert "order_3" in results["aggregated"]
 
     print("✅ 测试通过！")
 
 
 def run_all_tests():
     """运行所有测试"""
-    print("\n" + "#"*70)
+    print("\n" + "#" * 70)
     print("# 多阶交互ANOVA采集函数 - 单元测试套件")
-    print("#"*70)
+    print("#" * 70)
 
     tests = [
         test_main_only,
         test_main_plus_pairwise,
         test_full_three_way,
         test_config_parsing,
-        test_anova_engine_independently
+        test_anova_engine_independently,
     ]
 
     passed = 0
@@ -256,11 +258,12 @@ def run_all_tests():
             print(f"错误: {e}")
             failed += 1
             import traceback
+
             traceback.print_exc()
 
-    print("\n" + "#"*70)
+    print("\n" + "#" * 70)
     print(f"# 测试结果: {passed} 通过, {failed} 失败")
-    print("#"*70)
+    print("#" * 70)
 
 
 if __name__ == "__main__":

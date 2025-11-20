@@ -608,58 +608,56 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         """计算信息度量（序数用熵，回归用方差）"""
         try:
             if self._is_ordinal():
-                with torch.no_grad():
-                    posterior = self.model.posterior(X_can_t)
-                    mean = posterior.mean
-                    var = getattr(posterior, "variance", None)
-                    if var is None:
-                        try:
-                            var = posterior.variance
-                        except Exception:
-                            var = None
+                posterior = self.model.posterior(X_can_t)
+                mean = posterior.mean
+                var = getattr(posterior, "variance", None)
+                if var is None:
+                    try:
+                        var = posterior.variance
+                    except Exception:
+                        var = None
 
-                    # squeeze/reduce
-                    def _reduce_event(x: torch.Tensor) -> torch.Tensor:
-                        while x.dim() > 1 and x.shape[-1] == 1:
-                            x = x.squeeze(-1)
-                        if x.dim() > 1:
-                            x = x.mean(dim=-1)
-                        return x.view(-1)
+                # squeeze/reduce
+                def _reduce_event(x: torch.Tensor) -> torch.Tensor:
+                    while x.dim() > 1 and x.shape[-1] == 1:
+                        x = x.squeeze(-1)
+                    if x.dim() > 1:
+                        x = x.mean(dim=-1)
+                    return x.view(-1)
 
-                    mean_r = _reduce_event(mean)
-                    if var is None:
-                        base_var = torch.ones_like(mean_r)
-                    else:
-                        base_var = _reduce_event(var)
+                mean_r = _reduce_event(mean)
+                if var is None:
+                    base_var = torch.ones_like(mean_r)
+                else:
+                    base_var = _reduce_event(var)
 
-                    cutpoints = self._get_cutpoints(
-                        device=mean_r.device, dtype=mean_r.dtype
+                cutpoints = self._get_cutpoints(
+                    device=mean_r.device, dtype=mean_r.dtype
+                )
+                if cutpoints is not None:
+                    ent = self._ordinal_entropy_from_mv_stable(
+                        mean_r, base_var, cutpoints
                     )
-                    if cutpoints is not None:
-                        ent = self._ordinal_entropy_from_mv_stable(
-                            mean_r, base_var, cutpoints
-                        )
-                        return ent
-                    return torch.clamp(base_var, min=EPS)
+                    return ent
+                return torch.clamp(base_var, min=EPS)
             else:
-                with torch.no_grad():
-                    posterior = self.model.posterior(X_can_t)
-                    var = getattr(posterior, "variance", None)
-                    if var is None:
-                        try:
-                            var = posterior.variance
-                        except Exception:
-                            var = None
-                    if var is None:
-                        return torch.ones(
-                            X_can_t.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
-                        )
+                posterior = self.model.posterior(X_can_t)
+                var = getattr(posterior, "variance", None)
+                if var is None:
+                    try:
+                        var = posterior.variance
+                    except Exception:
+                        var = None
+                if var is None:
+                    return torch.ones(
+                        X_can_t.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+                    )
 
-                    while var.dim() > 1 and var.shape[-1] == 1:
-                        var = var.squeeze(-1)
-                    if var.dim() > 1:
-                        var = var.mean(dim=-1)
-                    return torch.clamp(var.view(-1), min=EPS)
+                while var.dim() > 1 and var.shape[-1] == 1:
+                    var = var.squeeze(-1)
+                if var.dim() > 1:
+                    var = var.mean(dim=-1)
+                return torch.clamp(var.view(-1), min=EPS)
         except Exception:
             return torch.ones(
                 X_can_t.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
@@ -1064,10 +1062,8 @@ class EURAnovaPairAcqf(AcquisitionFunction):
     # ---- 覆写 forward，执行分解式信息 + 覆盖 ----
     @t_batch_mode_transform()
     def forward(self, X: torch.Tensor) -> torch.Tensor:
-        # 设置随机种子确保确定性行为
-        if self.random_seed is not None:
-            np.random.seed(self.random_seed)
-
+        # 【修复】移除全局 np.random.seed 调用
+        # 随机性由 LocalSampler 的实例级 RNG 控制（避免全局污染）
         self._ensure_fresh_data()
         if (
             not self._fitted
@@ -1229,7 +1225,11 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             self._last_info = info_raw.detach().cpu()
             self._last_cov = cov_t.detach().cpu()
 
-        return total.view(X_can_t.shape[0])
+        # 返回值应匹配 X 的 t-batch 形状
+        # 对于 (B, q, d) 形状且 q=1，BoTorch 期望返回 (B,) 而不是 (B, 1)
+        if X.dim() == 3 and X.shape[1] == 1:
+            return total.view(X.shape[0])
+        return total.view(*X.shape[:-1])
 
     # ========== 调试与诊断工具 ==========
 
