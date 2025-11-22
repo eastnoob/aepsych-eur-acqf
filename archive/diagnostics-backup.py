@@ -55,53 +55,17 @@ class DiagnosticsManager:
             info_raw: 信息项（未标准化）
             cov: 覆盖项
         """
-        # Always attempt to keep the last-effect caches populated so downstream
-        # callers (reports / diagnostics) can rely on consistent values.
-        # We manufacture safe defaults when some inputs are missing. This
-        # intentionally avoids raising when update_effects is invoked in
-        # degenerate code paths.
-
-        # Determine a template tensor (on CPU) to derive shapes from. Prefer
-        # provided tensors in the order: main_sum, pair_sum, triplet_sum,
-        # info_raw, cov. If none are provided, fall back to a single-element
-        # zero tensor so mean/std calls remain safe.
-        template = None
-        for t in (main_sum, pair_sum, triplet_sum, info_raw, cov):
-            if t is not None:
-                try:
-                    template = t.detach().cpu()
-                    break
-                except Exception:
-                    # If a non-tensor like input creeps in, skip it.
-                    template = None
-
-        if template is None:
-            template = torch.zeros(1, dtype=torch.float32)
-
-        def _safe_to_cpu(x: Optional[torch.Tensor]) -> torch.Tensor:
-            """Return a CPU tensor for x, or a zeros tensor matching template."""
-            if x is None:
-                try:
-                    return torch.zeros_like(template)
-                except Exception:
-                    return torch.zeros(1, dtype=torch.float32)
-
-            try:
-                return x.detach().cpu()
-            except Exception:
-                # As a last resort, coerce to tensor and match template shape
-                t = torch.as_tensor(x)
-                if t.numel() == 1 and template.numel() > 1:
-                    return torch.zeros_like(template)
-                return t.detach().cpu()
-
-        # Cache values for debugging/inspection — keep this behaviour
-        # independent of debug_components so diagnostics are consistent.
-        self._last_main = _safe_to_cpu(main_sum)
-        self._last_pair = _safe_to_cpu(pair_sum)
-        self._last_triplet = _safe_to_cpu(triplet_sum)
-        self._last_info = _safe_to_cpu(info_raw)
-        self._last_cov = _safe_to_cpu(cov)
+        if self.debug_components:
+            if main_sum is not None:
+                self._last_main = main_sum.detach().cpu()
+            if pair_sum is not None:
+                self._last_pair = pair_sum.detach().cpu()
+            if triplet_sum is not None:
+                self._last_triplet = triplet_sum.detach().cpu()
+            if info_raw is not None:
+                self._last_info = info_raw.detach().cpu()
+            if cov is not None:
+                self._last_cov = cov.detach().cpu()
 
     def get_diagnostics(
         self,
@@ -142,19 +106,18 @@ class DiagnosticsManager:
         if config is not None:
             diag.update(config)
 
-        # 效应贡献 — always include these entries so callers don't have to
-        # special-case missing fields. These were previously only present when
-        # debug_components=True which made downstream reporting fragile.
-        if self._last_main is not None:
-            diag["main_effects_sum"] = self._last_main
-        if self._last_pair is not None:
-            diag["pair_effects_sum"] = self._last_pair
-        if self._last_triplet is not None:
-            diag["triplet_effects_sum"] = self._last_triplet
-        if self._last_info is not None:
-            diag["info_raw"] = self._last_info
-        if self._last_cov is not None:
-            diag["coverage"] = self._last_cov
+        # 效应贡献（如果启用调试）
+        if self.debug_components:
+            if self._last_main is not None:
+                diag["main_effects_sum"] = self._last_main
+            if self._last_pair is not None:
+                diag["pair_effects_sum"] = self._last_pair
+            if self._last_triplet is not None:
+                diag["triplet_effects_sum"] = self._last_triplet
+            if self._last_info is not None:
+                diag["info_raw"] = self._last_info
+            if self._last_cov is not None:
+                diag["coverage"] = self._last_cov
 
         return diag
 
