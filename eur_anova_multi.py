@@ -115,6 +115,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # ========== 权重参数 ==========
         main_weight: float = 1.0,  # 主效应权重
         lambda_2: Optional[float] = None,  # 二阶权重（None=动态）
+        lambda_2_init: Optional[
+            float
+        ] = None,  # 【新增】λ_2初始值（如果lambda_2=None且use_dynamic_lambda=True时使用）
         lambda_3: Optional[float] = None,  # 三阶权重（None=0.5）
         # 动态λ参数（用于二阶，如果lambda_2=None）
         use_dynamic_lambda: bool = True,
@@ -131,6 +134,8 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         tau_n_max: Optional[int] = None,
         total_budget: Optional[int] = None,  # 实验预算（自动配置tau_n_max）
         coverage_method: str = "min_distance",
+        # ========== 融合方式 ==========
+        fusion_method: str = "additive",  # 【新增】"additive" 或 "multiplicative"
         # ========== 变量类型 ==========
         variable_types: Optional[Dict[int, str]] = None,
         variable_types_list: Optional[Union[List[str], str]] = None,
@@ -165,6 +170,13 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         self.enable_pairwise = enable_pairwise
         self.enable_threeway = enable_threeway
 
+        # ========== 融合方式配置 ==========
+        if fusion_method not in ("additive", "multiplicative"):
+            raise ValueError(
+                f"fusion_method must be 'additive' or 'multiplicative', got {fusion_method}"
+            )
+        self.fusion_method = fusion_method
+
         self._pairs: List[Tuple[int, int]] = []
         if interaction_pairs is not None and enable_pairwise:
             self._pairs = parse_interaction_pairs(interaction_pairs)
@@ -188,6 +200,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # 二阶权重
         self.use_dynamic_lambda_2 = lambda_2 is None
         self.lambda_2 = float(lambda_2) if lambda_2 is not None else lambda_max
+
+        # 【新增】lambda_2_init：用于动态模式下的初始值（默认为lambda_min）
+        self.lambda_2_init = (
+            float(lambda_2_init) if lambda_2_init is not None else lambda_min
+        )
 
         # 三阶权重（默认0.5，避免过拟合）
         self.lambda_3 = float(lambda_3) if lambda_3 is not None else 0.5
@@ -261,10 +278,12 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         self._config = {
             "main_weight": main_weight,
             "lambda_2": self.lambda_2,
+            "lambda_2_init": self.lambda_2_init,  # 【新增】
             "lambda_3": self.lambda_3,
             "enable_main": enable_main,
             "enable_pairwise": enable_pairwise,
             "enable_threeway": enable_threeway,
+            "fusion_method": self.fusion_method,  # 【新增】
             "n_pairs": len(self._pairs),
             "pairs": self._pairs,
             "n_triplets": len(self._triplets),
@@ -479,9 +498,17 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         info_n = _stdz(info_raw)
         cov_n = _stdz(cov_t)
 
-        # ========== 最终融合 ==========
+        # ========== 最终融合 (支持加法和乘法) ==========
         gamma_t = self.weight_engine.compute_gamma()
-        total = info_n + gamma_t * cov_n
+
+        if self.fusion_method == "multiplicative":
+            # 乘法融合: acq = info * (1 + gamma * cov)
+            # 优势: 两项平衡，覆盖项不会被信息项淹没
+            total = info_n * (1.0 + gamma_t * cov_n)
+        else:
+            # 加法融合 (默认): acq = info + gamma * cov
+            # 传统方法，但覆盖项可能被信息项淹没
+            total = info_n + gamma_t * cov_n
 
         # 平局抖动
         if (total.max() - total.min()) < 1e-9:
