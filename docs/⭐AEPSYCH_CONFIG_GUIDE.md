@@ -83,10 +83,10 @@ variable_types_list = categorical, categorical, integer, continuous
 | 参数名 | 类型 | 默认值 | 范围 | 说明 |
 |--------|------|--------|------|------|
 | `use_dynamic_lambda` | bool | True | - | 是否启用动态交互权重 |
-| `tau1` | float | 0.7 | [0, 1] | r_t 上阈值（高于此值降低交互权重） |
-| `tau2` | float | 0.3 | [0, 1] | r_t 下阈值（低于此值提高交互权重） |
-| `lambda_min` | float | 0.1 | [0, ∞) | 最小交互权重（参数已收敛时） |
-| `lambda_max` | float | 1.0 | [0, ∞) | 最大交互权重（参数不确定时） |
+| `tau1` | float | 0.7 | [0, 1] | r_t 上阈值（>0.7时参数不确定，降低交互权重） |
+| `tau2` | float | 0.3 | [0, 1] | r_t 下阈值（<0.3时参数已收敛，提高交互权重） |
+| `lambda_min` | float | 0.1 | [0, ∞) | 最小交互权重（初期，参数不确定时） |
+| `lambda_max` | float | 1.0 | [0, ∞) | 最大交互权重（后期，参数已收敛时） |
 
 > 💡 **约束**: `tau1 > tau2`, `lambda_max >= lambda_min`
 
@@ -235,28 +235,39 @@ variable_types_list = categorical; integer; continuous; categorical
     λ_max,                                    if r_t < τ_2
 }
 
-其中 r_t = (1/|J|)·∑ Var[θ_j|D_t] / Var[θ_j|D_0]
+其中 r_t = 当前参数方差 / 初始参数方差
+     r_t = mean(Var[θ_j|D_t]) / mean(Var[θ_j|D_0])
 ```
 
-**直觉理解**:
-- **早期** (r_t ≈ 1, 参数不确定): λ_t ≈ λ_min，聚焦主效应
-- **后期** (r_t → 0, 参数收敛): λ_t → λ_max，探索交互效应
+**直觉理解（课程学习策略）**:
+- **r_t ≈ 1.0**（初期，参数高度不确定）: λ_t = λ_min，聚焦主效应，避免过拟合
+- **r_t ≈ 0.0**（后期，参数已收敛）: λ_t = λ_max，挖掘交互效应细节
+- **策略逻辑**: 先学主干（粗略地图），再抠细节（交互关系）
 
 #### γ_t（覆盖权重）动态公式
 
 ```
+# 第一阶段：基于样本数的基础权重
 γ_base = {
     γ_max,                                     if n < τ_n_min
     γ_max - (γ_max - γ_min)·(n-τ_n_min)/(τ_n_max-τ_n_min), if τ_n_min ≤ n ≤ τ_n_max
     γ_min,                                     if n > τ_n_max
 }
 
-γ_t = γ_base · adjustment(r_t)  # 可选：基于r_t微调±20%
+# 第二阶段：基于参数方差比的二阶调整
+γ_t = {
+    γ_base × 1.2,  if r_t > τ_1  (参数不确定，初期，提高覆盖)
+    γ_base × 0.8,  if r_t < τ_2  (参数已收敛，后期，降低覆盖)
+    γ_base,        otherwise     (稳定阶段)
+}
+
+最终夹值: γ_t ∈ [0.05, 1.0]
 ```
 
-**直觉理解**:
-- **早期** (n < tau_n_min): γ_t = γ_max，重视覆盖（探索）
-- **后期** (n > tau_n_max): γ_t = γ_min，重视信息（开发）
+**直觉理解（探索-利用平衡）**:
+- **初期** (n < 3, r_t ≈ 1.0): γ_t ≈ γ_max，广撒网探索未知区域
+- **后期** (n > 25, r_t ≈ 0.0): γ_t ≈ γ_min，精准打击已知高价值区域
+- **策略逻辑**: 早期多探索（避免遗漏），后期多利用（提高效率）
 
 ---
 
@@ -1073,11 +1084,81 @@ best_idx = scores.argmax()
 
 ---
 
+## 🆕 EURAnovaMultiAcqf 版本（支持三阶交互）
+
+> **注意**: 本文档主要针对 `EURAnovaPairAcqf`（二阶交互版本）。如需使用三阶及更高阶交互，请参考 `EURAnovaMultiAcqf`。
+
+### Multi 版本新增参数
+
+| 参数名 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enable_main` | bool | True | 是否启用主效应 |
+| `enable_pairwise` | bool | True | 是否启用二阶交互（全局开关） |
+| `enable_threeway` | bool | True | 是否启用三阶交互（全局开关） |
+| `interaction_triplets` | str/list | None | 三阶交互列表，如 `"0,1,2; 1,2,3"` |
+| `lambda_2` | float | None | 二阶权重（None=动态，替代 pair_weight） |
+| `lambda_2_init` | float | None | λ_2 初始值（动态模式下使用） |
+| `lambda_3` | float | 0.5 | 三阶交互权重（推荐 < 1.0 避免过拟合） |
+| `fusion_method` | str | "additive" | 信息与覆盖融合方式："additive" 或 "multiplicative" |
+
+### Multi 版本 INI 配置示例
+
+```ini
+[EURAnovaMultiAcqf]
+# 实验预算
+total_budget = 50
+
+# 阶数配置
+enable_main = true
+enable_pairwise = true
+enable_threeway = true
+
+# 交互配置
+interaction_pairs = 0,1; 1,2; 2,3
+interaction_triplets = 0,1,2
+
+# 权重配置（注意：Multi 版本使用 lambda_2 而非 pair_weight）
+lambda_2 = 1.0      # 二阶权重（None=动态调整）
+lambda_3 = 0.5      # 三阶权重（推荐较小）
+
+# 融合方式
+fusion_method = additive  # 或 "multiplicative"
+
+# 变量类型
+variable_types_list = categorical, continuous, integer, continuous
+
+# 动态权重参数（与 Pair 版本相同）
+use_dynamic_lambda = true
+tau1 = 0.7
+tau2 = 0.3
+lambda_min = 0.1
+lambda_max = 1.0
+```
+
+### 何时使用 Multi 版本？
+
+**推荐使用场景**:
+- 预算充足（>50 次试验）
+- 维度较少（≤4 维）
+- 先导研究表明存在三阶交互
+- 探索复杂非线性关系
+
+**注意事项**:
+- 三阶交互计算成本较高
+- `lambda_3` 建议设置为 0.3-0.5（避免过拟合）
+- 小样本情况下建议只使用主效应和二阶交互
+
+**详细文档**: 参见 `USAGE_MULTI_ORDER.md`
+
+---
+
 ## 📝 版本信息
 
-- **文档版本**: 1.0.0
-- **采集函数版本**: eur_anova_pair.py (2025-11-04)
-- **最后更新**: 2025-11-04
+- **文档版本**: 1.1.0
+- **采集函数版本**:
+  - `EURAnovaPairAcqf` (eur_anova_pair.py) - 二阶交互版本
+  - `EURAnovaMultiAcqf` (eur_anova_multi.py) - 多阶交互版本
+- **最后更新**: 2025-11-23
 - **维护者**: AEPsych Dynamic EUR Acquisition Team
 
 ---

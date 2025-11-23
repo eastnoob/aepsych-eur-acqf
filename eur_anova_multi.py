@@ -461,6 +461,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         else:
             lambda_2_t = self.lambda_2
 
+        # 【修复】确保 gamma_t 也被计算并保存
+        gamma_t_computed = self.weight_engine.compute_gamma()
+
         lambda_3_t = self.lambda_3
 
         # 提取各阶效应

@@ -50,17 +50,15 @@ class LocalSampler:
         """
         self.variable_types = variable_types
         self.local_jitter_frac = local_jitter_frac
-        self.local_num = int(local_num)  # Convert to int to handle config parsing floats
+        self.local_num = local_num
         self.random_seed = random_seed
 
         # 【修复】使用实例级 RNG（避免全局污染）
         # 参考：https://numpy.org/doc/stable/reference/random/generator.html
         if random_seed is not None:
-            # Convert to int to handle config parsing floats (e.g., 42.0 -> 42)
-            random_seed_int = int(random_seed)
-            self._np_rng = np.random.default_rng(random_seed_int)
+            self._np_rng = np.random.default_rng(random_seed)
             # 同时设置 torch 随机种子（保证跨框架可复现）
-            torch.manual_seed(random_seed_int)
+            torch.manual_seed(random_seed)
         else:
             self._np_rng = np.random.default_rng()
 

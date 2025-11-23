@@ -87,8 +87,8 @@ class DynamicWeightEngine:
         self.gamma_initial = gamma_initial
         self.gamma_min = gamma_min
         self.gamma_max = gamma_max
-        self.tau_n_min = int(tau_n_min)  # Convert to int to handle config parsing floats
-        self.tau_n_max = int(tau_n_max)  # Convert to int to handle config parsing floats
+        self.tau_n_min = tau_n_min
+        self.tau_n_max = tau_n_max
 
         # 状态缓存
         self._initial_param_vars: Optional[torch.Tensor] = None
@@ -304,8 +304,8 @@ class DynamicWeightEngine:
         }
 
         直觉：
-        - r_t高（参数不确定，初期）→ 降低交互权重，聚焦主效应（避免过拟合）
-        - r_t低（参数已收敛，后期）→ 提高交互权重，挖掘细节（精雕细琢）
+        - r_t高（参数已收敛）→ 降低交互权重，聚焦主效应
+        - r_t低（参数不确定）→ 提高交互权重，探索复杂模式
 
         Returns:
             λ_t ∈ [lambda_min, lambda_max]
@@ -337,8 +337,8 @@ class DynamicWeightEngine:
            - 中间：线性插值
 
         2. 基于参数方差比的二阶调整
-           - r_t > τ_1: γ ↑ 20%（参数不确定，初期，广撒网探索）
-           - r_t < τ_2: γ ↓ 20%（参数已收敛，后期，聚焦利用）
+           - r_t > τ_1: γ ↑ 20%（参数稳定，提高覆盖探索）
+           - r_t < τ_2: γ ↓ 20%（参数不确定，聚焦信息）
 
         Returns:
             γ_t ∈ [0.05, 1.0]（硬夹值确保稳定性）
