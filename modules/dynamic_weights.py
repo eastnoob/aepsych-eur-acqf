@@ -127,8 +127,11 @@ class DynamicWeightEngine:
             n_train: 当前训练样本数
             fitted: 模型是否已拟合
         """
+        import sys
+        print(f"\n[update_training_status] 被调用！旧n_train={self._n_train}, 新n_train={n_train}, fitted={fitted}", file=sys.stderr)
         self._n_train = n_train
         self._fitted = fitted
+        print(f"[update_training_status] 更新后：_n_train={self._n_train}, _fitted={self._fitted}", file=sys.stderr)
 
     def extract_parameter_variances_laplace(self) -> Optional[torch.Tensor]:
         """使用Laplace近似提取参数方差
@@ -211,8 +214,41 @@ class DynamicWeightEngine:
             device = X_train.device
             dtype = X_train.dtype
 
-            # 【修复】从实际模型获取参数
-            params_to_estimate = [p for p in actual_model.parameters() if p.requires_grad]
+            # 【修复】从实际模型获取参数，过滤掉结构参数（如cutpoints）
+            # 使用 named_parameters 以便识别参数类型
+            params_to_estimate = []
+            param_names = []
+
+            for name, param in actual_model.named_parameters():
+                if not param.requires_grad:
+                    continue
+
+                # 【智能过滤】只保留核心建模参数（反映效应的理解）
+                # 跳过结构参数：
+                # - cutpoints: Ordinal模型的阈值参数
+                # - variational_*: Variational GP的近似参数（随数据增长）
+                # - outcome_transform: 数据归一化参数
+                skip_keywords = ['cutpoint', 'outcome_transform', 'standardize', 'variational']
+                if any(keyword in name.lower() for keyword in skip_keywords):
+                    continue
+
+                # 只保留核心参数：
+                # - mean_module: 均值参数（反映基线）
+                # - covar_module: 协方差参数（lengthscale等，反映效应影响范围）
+                # - likelihood (除cutpoints外): 噪声参数
+                keep_keywords = ['mean_module', 'covar_module', 'likelihood']
+                if any(keyword in name.lower() for keyword in keep_keywords):
+                    params_to_estimate.append(param)
+                    param_names.append(name)
+
+            # Debug: 打印过滤后的参数列表（每次都打印，用于诊断）
+            import sys
+            if self._n_train <= 2:  # 只在前几次迭代打印
+                all_param_names = [name for name, _ in actual_model.named_parameters()]
+                print(f"[DEBUG n={self._n_train}] 所有参数数: {len(all_param_names)}", file=sys.stderr)
+                print(f"[DEBUG n={self._n_train}] 核心参数数: {len(params_to_estimate)}", file=sys.stderr)
+                print(f"[DEBUG n={self._n_train}] 所有参数名: {all_param_names}", file=sys.stderr)
+                print(f"[DEBUG n={self._n_train}] 核心参数名: {param_names}", file=sys.stderr)
 
             if len(params_to_estimate) == 0:
                 if not hasattr(self, "_debug_printed_fail2"):
@@ -313,15 +349,17 @@ class DynamicWeightEngine:
 
             all_param_precisions = torch.cat(param_vars).to(device=device, dtype=dtype)
 
-            # Debug: 打印参数精度统计（precision = grad^2）
-            if not hasattr(self, "_debug_printed_var_stats"):
-                import sys
-                print(f"[DEBUG 参数精度] 总参数数: {all_param_precisions.shape[0]}", file=sys.stderr)
-                print(f"[DEBUG 参数精度] 均值: {all_param_precisions.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数精度] 标准差: {all_param_precisions.std().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数精度] 最小值: {all_param_precisions.min().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数精度] 最大值: {all_param_precisions.max().item():.6e}", file=sys.stderr)
-                self._debug_printed_var_stats = True
+            # Debug: 每次都打印参数精度统计（移除hasattr限制）
+            import sys
+            print(f"[精度 n={self._n_train}] 总参数: {all_param_precisions.shape[0]}, 均值={all_param_precisions.mean().item():.6e}, std={all_param_precisions.std().item():.6e}", file=sys.stderr)
+            print(f"[精度 n={self._n_train}] 范围: [{all_param_precisions.min().item():.6e}, {all_param_precisions.max().item():.6e}]", file=sys.stderr)
+
+            # 【诊断增强】打印前10个和后10个精度值，用于对比不同迭代
+            if all_param_precisions.shape[0] >= 20:
+                print(f"[精度 n={self._n_train}] 前10个值: {all_param_precisions[:10].tolist()}", file=sys.stderr)
+                print(f"[精度 n={self._n_train}] 后10个值: {all_param_precisions[-10:].tolist()}", file=sys.stderr)
+            else:
+                print(f"[精度 n={self._n_train}] 所有值: {all_param_precisions.tolist()}", file=sys.stderr)
 
             return all_param_precisions
 
@@ -348,6 +386,9 @@ class DynamicWeightEngine:
             r_t ∈ [0, 1]
             1.0 if 无法计算（安全降级）
         """
+        import sys
+        print(f"\n[compute_relative_main_variance] 被调用！_n_train={self._n_train}, _fitted={self._fitted}, _initial_param_vars={'None' if self._initial_param_vars is None else 'exists'}", file=sys.stderr)
+
         if not self._fitted or self._n_train == 0:
             return 1.0
 
@@ -355,18 +396,30 @@ class DynamicWeightEngine:
             # 现在extract_parameter_variances_laplace返回的是precisions (grad^2)
             current_precisions = self.extract_parameter_variances_laplace()
 
+            import sys
+            print(f"[r_t n={self._n_train}] extract返回后: current_precisions is None={current_precisions is None}, len={len(current_precisions) if current_precisions is not None else 'N/A'}", file=sys.stderr)
+
             if current_precisions is None or len(current_precisions) == 0:
+                print(f"[r_t n={self._n_train}] 提前返回: current_precisions为空", file=sys.stderr)
                 return 1.0
 
             # 首次计算：保存初始精度作为基线
+            print(f"[r_t n={self._n_train}] 检查_initial_param_vars: is None={self._initial_param_vars is None}", file=sys.stderr)
+
+            # 【修复】检查核心参数数量是否变化
+            # 注意：使用智能过滤后，Ordinal GP的cutpoints变化不会触发此检测
+            # 只有真正的模型结构变化（如改变核函数）才会触发
+            if self._initial_param_vars is not None and len(self._initial_param_vars) != len(current_precisions):
+                print(f"[r_t n={self._n_train}] ⚠️ 核心参数数量变化: {len(self._initial_param_vars)} -> {len(current_precisions)}, 重置基线", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 注意：这通常不应该发生（已过滤掉cutpoints），可能是模型结构改变", file=sys.stderr)
+                self._initial_param_vars = None  # 重置基线
+
             if self._initial_param_vars is None:
                 self._initial_param_vars = current_precisions.clone().detach()
-                # Debug: 打印初始精度
-                if not hasattr(self, "_debug_printed_r_t_init"):
-                    import sys
-                    print(f"[DEBUG r_t] 首次计算，保存初始精度 (grad^2)", file=sys.stderr)
-                    print(f"[DEBUG r_t] 初始精度: 均值={self._initial_param_vars.mean().item():.6e}, 标准差={self._initial_param_vars.std().item():.6e}", file=sys.stderr)
-                    self._debug_printed_r_t_init = True
+                # Debug: 每次都打印初始精度（移除hasattr限制）
+                import sys
+                print(f"[r_t n={self._n_train}] 首次计算，保存初始精度", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 初始精度: 均值={self._initial_param_vars.mean().item():.6e}, std={self._initial_param_vars.std().item():.6e}, min={self._initial_param_vars.min().item():.6e}, max={self._initial_param_vars.max().item():.6e}", file=sys.stderr)
                 return 1.0
 
             # 计算方差比
@@ -374,23 +427,33 @@ class DynamicWeightEngine:
             variance_ratios = self._initial_param_vars / (current_precisions + EPS)
             r_t = variance_ratios.mean().item()
 
-            # Debug: 打印方差比计算细节
-            if not hasattr(self, "_debug_printed_r_t_calc"):
-                import sys
-                print(f"[DEBUG r_t] 计算方差比 (使用precision):", file=sys.stderr)
-                print(f"[DEBUG r_t]   当前精度均值: {current_precisions.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG r_t]   初始精度均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG r_t]   方差比均值 (prec_0/prec_t): {variance_ratios.mean().item():.6f}", file=sys.stderr)
-                print(f"[DEBUG r_t]   方差比标准差: {variance_ratios.std().item():.6f}", file=sys.stderr)
-                print(f"[DEBUG r_t]   r_t (夹值前): {r_t:.6f}", file=sys.stderr)
-                self._debug_printed_r_t_calc = True
+            # Debug: 每次都打印（移除hasattr限制），检测重置
+            import sys
+            print(f"[r_t n={self._n_train}] 当前精度: 均值={current_precisions.mean().item():.6e}, std={current_precisions.std().item():.6e}", file=sys.stderr)
+            print(f"[r_t n={self._n_train}] 初始精度: 均值={self._initial_param_vars.mean().item():.6e} (是否被重置: {id(self._initial_param_vars)})", file=sys.stderr)
+            print(f"[r_t n={self._n_train}] 方差比: 均值={variance_ratios.mean().item():.6f}, std={variance_ratios.std().item():.6f}, min={variance_ratios.min().item():.6f}, max={variance_ratios.max().item():.6f}", file=sys.stderr)
+            print(f"[r_t n={self._n_train}] r_t={r_t:.6f} (夹值前)", file=sys.stderr)
+
+            # 【诊断增强】打印前10个方差比值，检查是否所有元素都是1.0
+            if variance_ratios.shape[0] >= 20:
+                print(f"[r_t n={self._n_train}] 方差比前10个: {variance_ratios[:10].tolist()}", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 当前精度前10个: {current_precisions[:10].tolist()}", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 初始精度前10个: {self._initial_param_vars[:10].tolist()}", file=sys.stderr)
+            else:
+                print(f"[r_t n={self._n_train}] 方差比所有值: {variance_ratios.tolist()}", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 当前精度所有值: {current_precisions.tolist()}", file=sys.stderr)
+                print(f"[r_t n={self._n_train}] 初始精度所有值: {self._initial_param_vars.tolist()}", file=sys.stderr)
 
             # 夹值到[0, 1]
             r_t = float(max(0.0, min(1.0, r_t)))
 
             return r_t
 
-        except Exception:
+        except Exception as e:
+            import sys
+            import traceback
+            print(f"[r_t n={self._n_train}] 捕获异常: {type(e).__name__}: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
             return 1.0
 
     def compute_lambda(self) -> float:
