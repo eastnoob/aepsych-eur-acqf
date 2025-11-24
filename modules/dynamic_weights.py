@@ -276,26 +276,20 @@ class DynamicWeightEngine:
                         if grad is not None:
                             grad_flat = grad.flatten()
 
-                            # 【修复】使用RMS梯度 + 平方 + clip，避免数值爆炸
-                            # RMS梯度 = sqrt(mean(grad^2))，比简单均值更稳定
+                            # 【关键修改】保存梯度RMS本身，而不是方差
+                            # 这样可以在不同时刻计算相对方差时使用原始梯度信息
+                            # RMS梯度 = sqrt(mean(grad^2))
                             grad_rms = torch.sqrt((grad_flat ** 2).mean() + EPS)
-
-                            # 使用平方梯度作为精度的代理（Hessian对角近似）
-                            # Var[θ] ≈ 1 / (∇²L) ≈ 1 / (∇L)²
-                            precision = grad_rms ** 2 + 1e-6  # 避免除零
-                            param_var_raw = 1.0 / precision
-
-                            # Clip到合理范围 [1e-3, 1e3]，避免极端值
-                            param_var = torch.clamp(param_var_raw, min=1e-3, max=1e3)
 
                             # Debug: 打印前几个参数的梯度
                             if i < 3 and not hasattr(self, f"_debug_printed_grad_{i}"):
                                 import sys
-                                print(f"[DEBUG 梯度 参数{i}] 形状: {param.shape}, RMS梯度: {grad_rms.item():.6e}, 原始方差: {param_var_raw.item():.6e}, Clip后: {param_var.item():.6e}", file=sys.stderr)
+                                print(f"[DEBUG 梯度 参数{i}] 形状: {param.shape}, RMS梯度: {grad_rms.item():.6e}", file=sys.stderr)
                                 setattr(self, f"_debug_printed_grad_{i}", True)
 
+                            # 存储梯度平方（精度的代理），后续会转换为方差
                             param_vars.append(
-                                param_var.expand_as(param).flatten().detach()
+                                (grad_rms ** 2).expand_as(param).flatten().detach()
                             )
                         else:
                             param_vars.append(torch.ones_like(param).flatten())
@@ -317,19 +311,19 @@ class DynamicWeightEngine:
             if len(param_vars) == 0:
                 return None
 
-            all_param_vars = torch.cat(param_vars).to(device=device, dtype=dtype)
+            all_param_precisions = torch.cat(param_vars).to(device=device, dtype=dtype)
 
-            # Debug: 打印参数方差统计
+            # Debug: 打印参数精度统计（precision = grad^2）
             if not hasattr(self, "_debug_printed_var_stats"):
                 import sys
-                print(f"[DEBUG 参数方差] 总参数数: {all_param_vars.shape[0]}", file=sys.stderr)
-                print(f"[DEBUG 参数方差] 均值: {all_param_vars.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数方差] 标准差: {all_param_vars.std().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数方差] 最小值: {all_param_vars.min().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG 参数方差] 最大值: {all_param_vars.max().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数精度] 总参数数: {all_param_precisions.shape[0]}", file=sys.stderr)
+                print(f"[DEBUG 参数精度] 均值: {all_param_precisions.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数精度] 标准差: {all_param_precisions.std().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数精度] 最小值: {all_param_precisions.min().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数精度] 最大值: {all_param_precisions.max().item():.6e}", file=sys.stderr)
                 self._debug_printed_var_stats = True
 
-            return all_param_vars
+            return all_param_precisions
 
         except Exception as e:
             if not hasattr(self, "_debug_printed_exception"):
@@ -358,35 +352,35 @@ class DynamicWeightEngine:
             return 1.0
 
         try:
-            current_param_vars = self.extract_parameter_variances_laplace()
+            # 现在extract_parameter_variances_laplace返回的是precisions (grad^2)
+            current_precisions = self.extract_parameter_variances_laplace()
 
-            if current_param_vars is None or len(current_param_vars) == 0:
+            if current_precisions is None or len(current_precisions) == 0:
                 return 1.0
 
-            # 首次计算：保存初始方差作为基线
+            # 首次计算：保存初始精度作为基线
             if self._initial_param_vars is None:
-                self._initial_param_vars = current_param_vars.clone().detach()
-                # Debug: 打印初始方差
+                self._initial_param_vars = current_precisions.clone().detach()
+                # Debug: 打印初始精度
                 if not hasattr(self, "_debug_printed_r_t_init"):
                     import sys
-                    print(f"[DEBUG r_t] 首次计算，保存初始方差", file=sys.stderr)
-                    print(f"[DEBUG r_t] 初始方差均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
+                    print(f"[DEBUG r_t] 首次计算，保存初始精度 (grad^2)", file=sys.stderr)
+                    print(f"[DEBUG r_t] 初始精度: 均值={self._initial_param_vars.mean().item():.6e}, 标准差={self._initial_param_vars.std().item():.6e}", file=sys.stderr)
                     self._debug_printed_r_t_init = True
-                # 【修复】首次计算时返回1.0（这是正确的，因为没有基线可比较）
-                # 但从第二次开始，应该计算真实的方差比
                 return 1.0
 
             # 计算方差比
-            variance_ratios = current_param_vars / (self._initial_param_vars + EPS)
+            # 因为 Var ≈ 1/precision，所以 r_t = Var_t/Var_0 = prec_0/prec_t
+            variance_ratios = self._initial_param_vars / (current_precisions + EPS)
             r_t = variance_ratios.mean().item()
 
             # Debug: 打印方差比计算细节
             if not hasattr(self, "_debug_printed_r_t_calc"):
                 import sys
-                print(f"[DEBUG r_t] 计算方差比:", file=sys.stderr)
-                print(f"[DEBUG r_t]   当前方差均值: {current_param_vars.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG r_t]   初始方差均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
-                print(f"[DEBUG r_t]   方差比均值: {variance_ratios.mean().item():.6f}", file=sys.stderr)
+                print(f"[DEBUG r_t] 计算方差比 (使用precision):", file=sys.stderr)
+                print(f"[DEBUG r_t]   当前精度均值: {current_precisions.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG r_t]   初始精度均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG r_t]   方差比均值 (prec_0/prec_t): {variance_ratios.mean().item():.6f}", file=sys.stderr)
                 print(f"[DEBUG r_t]   方差比标准差: {variance_ratios.std().item():.6f}", file=sys.stderr)
                 print(f"[DEBUG r_t]   r_t (夹值前): {r_t:.6f}", file=sys.stderr)
                 self._debug_printed_r_t_calc = True
