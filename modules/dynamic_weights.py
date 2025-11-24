@@ -275,14 +275,23 @@ class DynamicWeightEngine:
 
                         if grad is not None:
                             grad_flat = grad.flatten()
-                            grad_abs_mean = torch.abs(grad_flat).mean()
-                            grad_norm = grad_abs_mean + EPS
-                            param_var = 1.0 / grad_norm
+
+                            # 【修复】使用RMS梯度 + 平方 + clip，避免数值爆炸
+                            # RMS梯度 = sqrt(mean(grad^2))，比简单均值更稳定
+                            grad_rms = torch.sqrt((grad_flat ** 2).mean() + EPS)
+
+                            # 使用平方梯度作为精度的代理（Hessian对角近似）
+                            # Var[θ] ≈ 1 / (∇²L) ≈ 1 / (∇L)²
+                            precision = grad_rms ** 2 + 1e-6  # 避免除零
+                            param_var_raw = 1.0 / precision
+
+                            # Clip到合理范围 [1e-3, 1e3]，避免极端值
+                            param_var = torch.clamp(param_var_raw, min=1e-3, max=1e3)
 
                             # Debug: 打印前几个参数的梯度
                             if i < 3 and not hasattr(self, f"_debug_printed_grad_{i}"):
                                 import sys
-                                print(f"[DEBUG 梯度 参数{i}] 形状: {param.shape}, 梯度绝对值均值: {grad_abs_mean.item():.6e}, param_var: {param_var.item():.6e}", file=sys.stderr)
+                                print(f"[DEBUG 梯度 参数{i}] 形状: {param.shape}, RMS梯度: {grad_rms.item():.6e}, 原始方差: {param_var_raw.item():.6e}, Clip后: {param_var.item():.6e}", file=sys.stderr)
                                 setattr(self, f"_debug_printed_grad_{i}", True)
 
                             param_vars.append(
