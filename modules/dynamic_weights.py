@@ -87,8 +87,12 @@ class DynamicWeightEngine:
         self.gamma_initial = gamma_initial
         self.gamma_min = gamma_min
         self.gamma_max = gamma_max
-        self.tau_n_min = int(tau_n_min)  # Convert to int to handle config parsing floats
-        self.tau_n_max = int(tau_n_max)  # Convert to int to handle config parsing floats
+        self.tau_n_min = int(
+            tau_n_min
+        )  # Convert to int to handle config parsing floats
+        self.tau_n_max = int(
+            tau_n_max
+        )  # Convert to int to handle config parsing floats
 
         # 状态缓存
         self._initial_param_vars: Optional[torch.Tensor] = None
@@ -99,9 +103,7 @@ class DynamicWeightEngine:
 
         # 参数验证
         if self.tau1 <= self.tau2:
-            raise ValueError(
-                f"tau1 must be > tau2, got tau1={tau1}, tau2={tau2}"
-            )
+            raise ValueError(f"tau1 must be > tau2, got tau1={tau1}, tau2={tau2}")
         if self.lambda_max < self.lambda_min:
             raise ValueError(
                 f"lambda_max must be >= lambda_min, "
@@ -169,47 +171,89 @@ class DynamicWeightEngine:
             None if 提取失败（回退到r_t=1.0）
         """
         try:
-            if (not hasattr(self.model, "train_inputs") or
-                self.model.train_inputs is None):
+            # 【修复】处理变换模型（如 ParameterTransformedOrdinalGPModel）
+            # 优先使用内部模型（_model）的训练数据
+            actual_model = self.model
+            if hasattr(self.model, "_model") and self.model._model is not None:
+                actual_model = self.model._model
+            elif hasattr(self.model, "model") and self.model.model is not None:
+                # 有些变换模型使用 .model 而不是 ._model
+                actual_model = self.model.model
+
+            # 【调试】第一次执行时打印模型信息
+            if not hasattr(self, "_debug_printed"):
+                import sys
+                print(f"[DEBUG dynamic_weights] 模型类型: {type(self.model).__name__}", file=sys.stderr)
+                print(f"[DEBUG dynamic_weights] actual_model 类型: {type(actual_model).__name__}", file=sys.stderr)
+                print(f"[DEBUG dynamic_weights] has train_inputs: {hasattr(actual_model, 'train_inputs')}", file=sys.stderr)
+                if hasattr(actual_model, 'train_inputs'):
+                    print(f"[DEBUG dynamic_weights] train_inputs is None: {actual_model.train_inputs is None}", file=sys.stderr)
+                self._debug_printed = True
+
+            if (
+                not hasattr(actual_model, "train_inputs")
+                or actual_model.train_inputs is None
+            ):
                 return None
 
-            X_train = self.model.train_inputs[0]
-            y_train = self.model.train_targets
+            X_train = actual_model.train_inputs[0]
+            y_train = actual_model.train_targets
 
             if X_train is None or y_train is None or len(y_train) == 0:
+                if not hasattr(self, "_debug_printed_fail1"):
+                    import sys
+                    print(f"[DEBUG] 失败点1: X_train is None: {X_train is None}, y_train is None: {y_train is None}", file=sys.stderr)
+                    if y_train is not None:
+                        print(f"[DEBUG] 失败点1: len(y_train)={len(y_train)}", file=sys.stderr)
+                    self._debug_printed_fail1 = True
                 return None
 
             device = X_train.device
             dtype = X_train.dtype
 
-            params_to_estimate = [
-                p for p in self.model.parameters() if p.requires_grad
-            ]
+            # 【修复】从实际模型获取参数
+            params_to_estimate = [p for p in actual_model.parameters() if p.requires_grad]
 
             if len(params_to_estimate) == 0:
+                if not hasattr(self, "_debug_printed_fail2"):
+                    import sys
+                    print(f"[DEBUG] 失败点2: 无可训练参数", file=sys.stderr)
+                    self._debug_printed_fail2 = True
                 return None
 
+            if not hasattr(self, "_debug_printed_success"):
+                import sys
+                print(f"[DEBUG] 成功: X_train.shape={X_train.shape}, params={len(params_to_estimate)}", file=sys.stderr)
+                self._debug_printed_success = True
+
             # 保存原始模式
-            original_mode = self.model.training
+            original_mode = actual_model.training
 
             try:
-                self.model.eval()  # 使用eval模式避免随机性
+                actual_model.eval()  # 使用eval模式避免随机性
 
                 param_vars = []
 
                 # 只计算一次posterior和NLL
                 with torch.enable_grad():
-                    posterior = self.model.posterior(X_train)
-                    mean = posterior.mean.squeeze(-1)
-                    variance = posterior.variance.squeeze(-1)
+                    try:
+                        posterior = actual_model.posterior(X_train)
+                        mean = posterior.mean.squeeze(-1)
+                        variance = posterior.variance.squeeze(-1)
 
-                    # 【修复】完整的 Gaussian NLL 包含 log(variance) 项
-                    # NLL = 0.5 * Σ[log(σ²) + (y-μ)²/σ²]
-                    # 之前缺少 log 项会减弱梯度对方差的响应
-                    nll = 0.5 * torch.sum(
-                        torch.log(variance + EPS) +
-                        (y_train.squeeze() - mean) ** 2 / (variance + EPS)
-                    )
+                        # 【修复】完整的 Gaussian NLL 包含 log(variance) 项
+                        # NLL = 0.5 * Σ[log(σ²) + (y-μ)²/σ²]
+                        # 之前缺少 log 项会减弱梯度对方差的响应
+                        nll = 0.5 * torch.sum(
+                            torch.log(variance + EPS)
+                            + (y_train.squeeze() - mean) ** 2 / (variance + EPS)
+                        )
+                    except Exception as posterior_err:
+                        if not hasattr(self, "_debug_printed_fail3"):
+                            import sys
+                            print(f"[DEBUG] 失败点3: posterior计算失败: {posterior_err}", file=sys.stderr)
+                            self._debug_printed_fail3 = True
+                        return None
 
                 # 分别计算每个参数的梯度
                 for i, param in enumerate(params_to_estimate):
@@ -219,7 +263,7 @@ class DynamicWeightEngine:
                             param.grad = None
 
                         # 最后一个参数不需要retain_graph
-                        is_last = (i == len(params_to_estimate) - 1)
+                        is_last = i == len(params_to_estimate) - 1
 
                         grad = torch.autograd.grad(
                             nll,
@@ -230,28 +274,62 @@ class DynamicWeightEngine:
                         )[0]
 
                         if grad is not None:
-                            grad_norm = torch.abs(grad.flatten()).mean() + EPS
+                            grad_flat = grad.flatten()
+                            grad_abs_mean = torch.abs(grad_flat).mean()
+                            grad_norm = grad_abs_mean + EPS
                             param_var = 1.0 / grad_norm
+
+                            # Debug: 打印前几个参数的梯度
+                            if i < 3 and not hasattr(self, f"_debug_printed_grad_{i}"):
+                                import sys
+                                print(f"[DEBUG 梯度 参数{i}] 形状: {param.shape}, 梯度绝对值均值: {grad_abs_mean.item():.6e}, param_var: {param_var.item():.6e}", file=sys.stderr)
+                                setattr(self, f"_debug_printed_grad_{i}", True)
+
                             param_vars.append(
                                 param_var.expand_as(param).flatten().detach()
                             )
                         else:
                             param_vars.append(torch.ones_like(param).flatten())
 
-                    except Exception:
+                    except Exception as grad_err:
+                        if i == 0 and not hasattr(self, "_debug_printed_fail4"):
+                            import sys
+                            print(f"[DEBUG] 失败点4: 梯度计算失败 (参数{i}): {grad_err}", file=sys.stderr)
+                            self._debug_printed_fail4 = True
                         param_vars.append(torch.ones_like(param).flatten())
 
             finally:
                 # 确保恢复原始模式（异常安全）
-                self.model.train(original_mode)
+                if original_mode:
+                    actual_model.train()
+                else:
+                    actual_model.eval()
 
             if len(param_vars) == 0:
                 return None
 
             all_param_vars = torch.cat(param_vars).to(device=device, dtype=dtype)
+
+            # Debug: 打印参数方差统计
+            if not hasattr(self, "_debug_printed_var_stats"):
+                import sys
+                print(f"[DEBUG 参数方差] 总参数数: {all_param_vars.shape[0]}", file=sys.stderr)
+                print(f"[DEBUG 参数方差] 均值: {all_param_vars.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数方差] 标准差: {all_param_vars.std().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数方差] 最小值: {all_param_vars.min().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG 参数方差] 最大值: {all_param_vars.max().item():.6e}", file=sys.stderr)
+                self._debug_printed_var_stats = True
+
             return all_param_vars
 
-        except Exception:
+        except Exception as e:
+            if not hasattr(self, "_debug_printed_exception"):
+                import sys
+                import traceback
+                print(f"[DEBUG] 外层异常捕获: {type(e).__name__}: {e}", file=sys.stderr)
+                print(f"[DEBUG] Traceback:", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+                self._debug_printed_exception = True
             return None
 
     def compute_relative_main_variance(self) -> float:
@@ -279,11 +357,30 @@ class DynamicWeightEngine:
             # 首次计算：保存初始方差作为基线
             if self._initial_param_vars is None:
                 self._initial_param_vars = current_param_vars.clone().detach()
+                # Debug: 打印初始方差
+                if not hasattr(self, "_debug_printed_r_t_init"):
+                    import sys
+                    print(f"[DEBUG r_t] 首次计算，保存初始方差", file=sys.stderr)
+                    print(f"[DEBUG r_t] 初始方差均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
+                    self._debug_printed_r_t_init = True
+                # 【修复】首次计算时返回1.0（这是正确的，因为没有基线可比较）
+                # 但从第二次开始，应该计算真实的方差比
                 return 1.0
 
             # 计算方差比
             variance_ratios = current_param_vars / (self._initial_param_vars + EPS)
             r_t = variance_ratios.mean().item()
+
+            # Debug: 打印方差比计算细节
+            if not hasattr(self, "_debug_printed_r_t_calc"):
+                import sys
+                print(f"[DEBUG r_t] 计算方差比:", file=sys.stderr)
+                print(f"[DEBUG r_t]   当前方差均值: {current_param_vars.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG r_t]   初始方差均值: {self._initial_param_vars.mean().item():.6e}", file=sys.stderr)
+                print(f"[DEBUG r_t]   方差比均值: {variance_ratios.mean().item():.6f}", file=sys.stderr)
+                print(f"[DEBUG r_t]   方差比标准差: {variance_ratios.std().item():.6f}", file=sys.stderr)
+                print(f"[DEBUG r_t]   r_t (夹值前): {r_t:.6f}", file=sys.stderr)
+                self._debug_printed_r_t_calc = True
 
             # 夹值到[0, 1]
             r_t = float(max(0.0, min(1.0, r_t)))
@@ -355,9 +452,7 @@ class DynamicWeightEngine:
             elif n_train >= self.tau_n_max:
                 gamma_base = self.gamma_min
             else:
-                t_ratio = (n_train - self.tau_n_min) / (
-                    self.tau_n_max - self.tau_n_min
-                )
+                t_ratio = (n_train - self.tau_n_min) / (self.tau_n_max - self.tau_n_min)
                 gamma_base = (
                     self.gamma_max - (self.gamma_max - self.gamma_min) * t_ratio
                 )
@@ -366,9 +461,9 @@ class DynamicWeightEngine:
             r_t = self.compute_relative_main_variance()
 
             if r_t > self.tau1:
-                gamma_adjusted = gamma_base * 1.2   # 提高覆盖
+                gamma_adjusted = gamma_base * 1.2  # 提高覆盖
             elif r_t < self.tau2:
-                gamma_adjusted = gamma_base * 0.8   # 降低覆盖
+                gamma_adjusted = gamma_base * 0.8  # 降低覆盖
             else:
                 gamma_adjusted = gamma_base
 
@@ -404,21 +499,21 @@ class DynamicWeightEngine:
         r_t = self.compute_relative_main_variance() if self._fitted else None
 
         return {
-            'lambda_t': self._current_lambda,
-            'gamma_t': self._current_gamma,
-            'r_t': r_t,
-            'n_train': self._n_train,
-            'fitted': self._fitted,
-            'config': {
-                'use_dynamic_lambda': self.use_dynamic_lambda,
-                'tau1': self.tau1,
-                'tau2': self.tau2,
-                'lambda_min': self.lambda_min,
-                'lambda_max': self.lambda_max,
-                'use_dynamic_gamma': self.use_dynamic_gamma,
-                'gamma_min': self.gamma_min,
-                'gamma_max': self.gamma_max,
-                'tau_n_min': self.tau_n_min,
-                'tau_n_max': self.tau_n_max,
-            }
+            "lambda_t": self._current_lambda,
+            "gamma_t": self._current_gamma,
+            "r_t": r_t,
+            "n_train": self._n_train,
+            "fitted": self._fitted,
+            "config": {
+                "use_dynamic_lambda": self.use_dynamic_lambda,
+                "tau1": self.tau1,
+                "tau2": self.tau2,
+                "lambda_min": self.lambda_min,
+                "lambda_max": self.lambda_max,
+                "use_dynamic_gamma": self.use_dynamic_gamma,
+                "gamma_min": self.gamma_min,
+                "gamma_max": self.gamma_max,
+                "tau_n_min": self.tau_n_min,
+                "tau_n_max": self.tau_n_max,
+            },
         }

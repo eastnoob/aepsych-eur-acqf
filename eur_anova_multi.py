@@ -535,7 +535,18 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
     def get_diagnostics(self) -> Dict[str, Any]:
         """获取完整诊断信息"""
-        return self.diagnostics.get_diagnostics(
+        # 【修复】确保数据已同步（这样 _last_hist_n 会被正确更新）
+        self._ensure_fresh_data()
+
+        # 【修复】获取 r_t 值
+        # 即使模型未训练，也尝试计算 r_t（会返回默认值）
+        try:
+            r_t = self.weight_engine.compute_relative_main_variance()
+        except Exception:
+            # 如果计算失败，返回 None
+            r_t = None
+
+        diag = self.diagnostics.get_diagnostics(
             lambda_t=self.weight_engine.get_current_lambda(),
             gamma_t=self.weight_engine.get_current_gamma(),
             lambda_2=(
@@ -548,6 +559,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             fitted=self._fitted,
             config=self._config,
         )
+
+        # 【修复】添加 r_t 到诊断信息
+        diag["r_t"] = r_t
+
+        return diag
 
     def print_diagnostics(self, verbose: bool = False) -> None:
         """打印诊断信息到控制台"""
