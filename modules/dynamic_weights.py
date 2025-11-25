@@ -46,8 +46,8 @@ class DynamicWeightEngine:
         model: Model,
         # λ_t 参数
         use_dynamic_lambda: bool = True,
-        tau1: float = 0.7,
-        tau2: float = 0.3,
+        tau1: float = 0.80,  # [2025-11-25] 从0.7提高到0.8，降低lambda对r_t波动的敏感度
+        tau2: float = 0.20,  # [2025-11-25] 从0.3降低到0.2，配合lambda_t EMA平滑
         lambda_min: float = 0.1,
         lambda_max: float = 1.0,
         # γ_t 参数
@@ -108,6 +108,9 @@ class DynamicWeightEngine:
         self._cached_r_t: Optional[float] = None  # 缓存的 r_t 值
         self._cached_r_t_n_train: int = -1  # 缓存的 r_t 对应的 n_train
         self._r_t_smoothed: Optional[float] = None  # EMA 平滑后的 r_t 值
+
+        # [2025-11-25] 添加lambda_t EMA平滑，避免大幅回退
+        self._prev_lambda: Optional[float] = None  # lambda_t的EMA缓存
 
         # 参数验证
         if self.tau1 <= self.tau2:
@@ -383,6 +386,12 @@ class DynamicWeightEngine:
             # 线性插值
             t_ratio = (self.tau1 - r_t) / (self.tau1 - self.tau2 + EPS)
             lambda_t = self.lambda_min + (self.lambda_max - self.lambda_min) * t_ratio
+
+        # [2025-11-25] 对lambda_t应用EMA平滑，避免大幅回退
+        # alpha=0.6: 60%保留历史，40%响应当前值，平衡稳定性和响应性
+        if self._prev_lambda is not None:
+            lambda_t = 0.6 * self._prev_lambda + 0.4 * lambda_t
+        self._prev_lambda = lambda_t  # 更新缓存
 
         self._current_lambda = float(lambda_t)
         return float(lambda_t)
