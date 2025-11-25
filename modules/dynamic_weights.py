@@ -244,15 +244,18 @@ class DynamicWeightEngine:
                 file=sys.stderr,
             )
 
-        # 映射到 [0, 1] 范围：缩放使得 0.5 变化 → r_t = 1.0
-        # 这样可以避免 r_t 过快衰减
-        r_t_raw = min(1.0, change_rate * 2.0)
+        # [方案A修复1] 去掉×2放大系数,降低r_t虚高
+        # 原scale=2.0导致r_t均值0.68,过高→lambda_t过低
+        # 改为1.0后预期r_t降至0.30-0.35→lambda_t后期可达0.75-0.80
+        r_t_raw = min(1.0, change_rate * 1.0)
 
-        # Apply EMA smoothing (alpha=0.7)
+        # [方案A修复2] 增强EMA平滑(alpha 0.7→0.85),减少r_t波动
+        # 原alpha=0.7导致r_t波动→lambda_t单调性仅65.3%
+        # 改为0.85后预期lambda_t单调性提升至85-90%
         if self._r_t_smoothed is None:
             r_t = r_t_raw  # First iteration: no smoothing
         else:
-            r_t = 0.7 * self._r_t_smoothed + 0.3 * r_t_raw
+            r_t = 0.85 * self._r_t_smoothed + 0.15 * r_t_raw
 
         self._r_t_smoothed = r_t  # Update EMA state
 
@@ -370,12 +373,18 @@ class DynamicWeightEngine:
         - r_t高（参数不确定，初期）→ 降低交互权重，聚焦主效应（避免过拟合）
         - r_t低（参数已收敛，后期）→ 提高交互权重，挖掘细节（精雕细琢）
 
+        [方案A] 修复r_t计算缺陷：
+        - 降低scale系数(2.0→1.0)，解决r_t虚高问题
+        - 增强EMA平滑(alpha 0.7→0.85)，减少r_t波动
+        - 保持参数驱动的自适应机制
+
         Returns:
             λ_t ∈ [lambda_min, lambda_max]
         """
         if not self.use_dynamic_lambda:
             return float(self.lambda_max)
 
+        # 使用参数变化率计算r_t（方案A修复已在compute_relative_main_variance中）
         r_t = self.compute_relative_main_variance()
 
         if r_t > self.tau1:
