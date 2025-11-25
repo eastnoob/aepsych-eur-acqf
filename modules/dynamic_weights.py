@@ -107,6 +107,7 @@ class DynamicWeightEngine:
         self._params_need_update: bool = True  # 标志：参数历史需要更新
         self._cached_r_t: Optional[float] = None  # 缓存的 r_t 值
         self._cached_r_t_n_train: int = -1  # 缓存的 r_t 对应的 n_train
+        self._r_t_smoothed: Optional[float] = None  # EMA 平滑后的 r_t 值
 
         # 参数验证
         if self.tau1 <= self.tau2:
@@ -242,7 +243,15 @@ class DynamicWeightEngine:
 
         # 映射到 [0, 1] 范围：缩放使得 0.5 变化 → r_t = 1.0
         # 这样可以避免 r_t 过快衰减
-        r_t = min(1.0, change_rate * 2.0)
+        r_t_raw = min(1.0, change_rate * 2.0)
+
+        # Apply EMA smoothing (alpha=0.7)
+        if self._r_t_smoothed is None:
+            r_t = r_t_raw  # First iteration: no smoothing
+        else:
+            r_t = 0.7 * self._r_t_smoothed + 0.3 * r_t_raw
+
+        self._r_t_smoothed = r_t  # Update EMA state
 
         # 缓存结果（关键！）
         self._cached_r_t = r_t
