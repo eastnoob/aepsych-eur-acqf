@@ -147,6 +147,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         use_hybrid_perturbation: bool = False,  # 启用混合扰动（≤3水平变量穷举）
         exhaustive_level_threshold: int = 3,  # 穷举阈值
         exhaustive_use_cyclic_fill: bool = True,  # 循环填充
+        # ========== 自动计算 local_num ==========
+        auto_compute_local_num: bool = False,  # 自动计算local_num（默认False，手动配置）
+        auto_local_num_max: int = 12,  # 自动计算上限
         # ========== 调试 ==========
         debug_components: Union[bool, str] = False,
     ) -> None:
@@ -262,6 +265,8 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             use_hybrid_perturbation=use_hybrid_perturbation,
             exhaustive_level_threshold=exhaustive_level_threshold,
             exhaustive_use_cyclic_fill=exhaustive_use_cyclic_fill,
+            auto_compute_local_num=auto_compute_local_num,
+            auto_local_num_max=auto_local_num_max,
         )
 
         # 4. 覆盖度计算
