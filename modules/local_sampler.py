@@ -43,13 +43,16 @@ class LocalSampler:
         use_hybrid_perturbation: bool = False,
         exhaustive_level_threshold: int = 3,
         exhaustive_use_cyclic_fill: bool = True,
+        # ========== 自动计算 local_num ==========
+        auto_compute_local_num: bool = False,
+        auto_local_num_max: int = 12,
     ):
         """
         Args:
             variable_types: 变量类型字典 {dim_idx: type_str}
                            type_str ∈ {'categorical', 'integer', 'continuous'}
             local_jitter_frac: 扰动幅度（相对特征范围）
-            local_num: 每个候选点生成的扰动数
+            local_num: 每个候选点生成的扰动数（手动设置时使用）
             random_seed: 随机种子（None表示不固定）
             use_hybrid_perturbation: 是否启用混合扰动策略（默认False，向后兼容）
             exhaustive_level_threshold: 对多少水平以下的离散变量使用穷举（默认3）
@@ -57,16 +60,27 @@ class LocalSampler:
             exhaustive_use_cyclic_fill: 穷举时是否循环填充到local_num（默认True）
                                        True:  3水平+local_num=4 → [0,1,2,0]
                                        False: 3水平+local_num=4 → [0,1,2]
+            auto_compute_local_num: 是否自动计算local_num（默认False，手动配置）
+                                   True: 根据低水平离散变量自动计算LCM
+                                   False: 使用手动设置的local_num值
+            auto_local_num_max: 自动计算local_num时的上限（默认12，避免成本爆炸）
         """
         self.variable_types = variable_types
         self.local_jitter_frac = local_jitter_frac
-        self.local_num = int(local_num)  # Convert to int to handle config parsing floats
+        self._local_num_manual = int(local_num)  # 保存手动设置值
         self.random_seed = random_seed
 
         # 混合扰动策略参数
         self.use_hybrid_perturbation = use_hybrid_perturbation
         self.exhaustive_level_threshold = int(exhaustive_level_threshold)
         self.exhaustive_use_cyclic_fill = exhaustive_use_cyclic_fill
+
+        # 自动计算参数
+        self.auto_compute_local_num = auto_compute_local_num
+        self.auto_local_num_max = int(auto_local_num_max)
+
+        # local_num 初始化（可能在 update_data 中被自动计算覆盖）
+        self.local_num = self._local_num_manual
 
         # 【修复】使用实例级 RNG（避免全局污染）
         # 参考：https://numpy.org/doc/stable/reference/random/generator.html
@@ -96,6 +110,10 @@ class LocalSampler:
         self._X_train_np = X_train_np
         self._precompute_categorical_values()
         self._compute_feature_ranges()
+
+        # 【新增】自动计算 local_num（如果启用）
+        if self.auto_compute_local_num:
+            self._auto_compute_local_num()
 
     def _precompute_categorical_values(self) -> None:
         """预计算每个分类维的unique值"""
@@ -143,6 +161,88 @@ class LocalSampler:
         mn = x.min(axis=0)
         mx = x.max(axis=0)
         self._feature_ranges = np.stack([mn, mx], axis=0)  # (2, d)
+
+    def _compute_lcm(self, numbers: List[int]) -> int:
+        """计算一组数字的最小公倍数 (LCM)
+
+        Args:
+            numbers: 整数列表
+
+        Returns:
+            最小公倍数
+        """
+        import math
+        if not numbers:
+            return self._local_num_manual
+
+        lcm = numbers[0]
+        for num in numbers[1:]:
+            lcm = abs(lcm * num) // math.gcd(lcm, num)
+        return lcm
+
+    def _auto_compute_local_num(self) -> None:
+        """自动计算 local_num（基于低水平离散变量的LCM）
+
+        逻辑：
+        1. 收集所有 ≤ exhaustive_level_threshold 的离散变量的水平数
+        2. 计算这些水平数的LCM（最小公倍数）
+        3. 如果LCM超过上限，使用上限值
+        4. 如果没有低水平离散变量，保持手动设置值
+        """
+        if not self.variable_types or not self._unique_vals_dict:
+            # 没有变量类型信息或unique值，保持手动设置
+            self.local_num = self._local_num_manual
+            return
+
+        # 收集低水平离散变量的水平数
+        low_level_counts = []
+
+        for dim_idx, vtype in self.variable_types.items():
+            if vtype in ("categorical", "integer"):
+                # 获取该维度的水平数
+                if dim_idx in self._unique_vals_dict:
+                    n_levels = len(self._unique_vals_dict[dim_idx])
+                else:
+                    # 对于integer类型，从feature_ranges计算
+                    if self._feature_ranges is not None and 0 <= dim_idx < self._feature_ranges.shape[1]:
+                        min_val = self._feature_ranges[0, dim_idx]
+                        max_val = self._feature_ranges[1, dim_idx]
+                        n_levels = int(max_val - min_val) + 1
+                    else:
+                        continue
+
+                # 只考虑低水平变量（≤ threshold）
+                if n_levels <= self.exhaustive_level_threshold:
+                    low_level_counts.append(n_levels)
+
+        if not low_level_counts:
+            # 没有低水平离散变量，保持手动设置
+            self.local_num = self._local_num_manual
+            warnings.warn(
+                f"auto_compute_local_num=True 但没有找到低水平离散变量 "
+                f"(≤{self.exhaustive_level_threshold}水平)，使用手动设置值 local_num={self._local_num_manual}",
+                UserWarning
+            )
+            return
+
+        # 计算LCM
+        computed_lcm = self._compute_lcm(low_level_counts)
+
+        # 应用上限
+        if computed_lcm > self.auto_local_num_max:
+            self.local_num = self.auto_local_num_max
+            warnings.warn(
+                f"自动计算的 local_num={computed_lcm} 超过上限 {self.auto_local_num_max}，"
+                f"已限制为 {self.auto_local_num_max}。"
+                f"低水平变量水平数: {low_level_counts}",
+                UserWarning
+            )
+        else:
+            self.local_num = computed_lcm
+            print(
+                f"[LocalSampler] 自动计算 local_num = {self.local_num} "
+                f"(基于低水平变量: {low_level_counts}, LCM={computed_lcm})"
+            )
 
     def sample(
         self,
