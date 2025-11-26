@@ -140,6 +140,10 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         # 局部扰动参数
         local_jitter_frac: float = 0.1,
         local_num: int = 4,
+        # ========== 混合扰动策略参数 ==========
+        use_hybrid_perturbation: bool = False,
+        exhaustive_level_threshold: int = 3,
+        exhaustive_use_cyclic_fill: bool = True,
         # 类型与覆盖设置
         variable_types: Optional[Dict[int, str]] = None,
         coverage_method: str = "min_distance",
@@ -233,6 +237,11 @@ class EURAnovaPairAcqf(AcquisitionFunction):
 
         self.local_jitter_frac = float(local_jitter_frac)
         self.local_num = int(local_num)
+
+        # 混合扰动策略参数
+        self.use_hybrid_perturbation = bool(use_hybrid_perturbation)
+        self.exhaustive_level_threshold = int(exhaustive_level_threshold)
+        self.exhaustive_use_cyclic_fill = bool(exhaustive_use_cyclic_fill)
 
         # 动态权重参数（λ_t - 交互效应自适应）
         self.use_dynamic_lambda = bool(use_dynamic_lambda)
@@ -718,20 +727,63 @@ class EURAnovaPairAcqf(AcquisitionFunction):
                         self._categorical_fallback_warned.add(k)
                     # base[:, :, k] 保持不变（即 X_can_t[:, k] 的重复）
                     continue
+
+                n_levels = len(unique_vals)
+
+                # 【混合策略】判断是否使用穷举
+                if (self.use_hybrid_perturbation and
+                    n_levels <= self.exhaustive_level_threshold):
+                    # ========== 穷举模式 ==========
+                    if self.exhaustive_use_cyclic_fill:
+                        # 循环填充到local_num（均衡覆盖所有水平）
+                        n_repeats = (self.local_num // n_levels) + 1
+                        samples = np.tile(unique_vals, (B, n_repeats))
+                        samples = samples[:, :self.local_num]  # 裁剪到local_num
+                    else:
+                        # 只生成n_levels个样本（不填充）
+                        samples = np.tile(unique_vals, (B, 1))
+
+                    base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                        dtype=X_can_t.dtype, device=X_can_t.device
+                    )
                 else:
-                    # 【正常路径】离散采样（完全合法）
+                    # ========== 随机采样模式（原始逻辑）==========
                     samples = np.random.choice(unique_vals, size=(B, self.local_num))
                     base[:, :, k] = torch.from_numpy(samples).to(
                         dtype=X_can_t.dtype, device=X_can_t.device
                     )
 
             elif vt == "integer":
-                # 【改进】整数：高斯+舍入+夹值
-                sigma = self.local_jitter_frac * span[k]
-                noise = torch.randn(B, self.local_num, device=X_can_t.device) * sigma
-                base[:, :, k] = torch.round(
-                    torch.clamp(base[:, :, k] + noise, min=mn[k], max=mx[k])
-                )
+                # 【改进】整数：混合策略（穷举 vs 高斯）
+                # 计算整数范围内的所有可能值
+                int_min = int(np.floor(mn[k].item() if torch.is_tensor(mn[k]) else mn[k]))
+                int_max = int(np.ceil(mx[k].item() if torch.is_tensor(mx[k]) else mx[k]))
+                all_integers = np.arange(int_min, int_max + 1)
+                n_levels = len(all_integers)
+
+                # 【混合策略】判断是否使用穷举
+                if (self.use_hybrid_perturbation and
+                    n_levels <= self.exhaustive_level_threshold):
+                    # ========== 穷举模式 ==========
+                    if self.exhaustive_use_cyclic_fill:
+                        # 循环填充到local_num
+                        n_repeats = (self.local_num // n_levels) + 1
+                        samples = np.tile(all_integers, (B, n_repeats))
+                        samples = samples[:, :self.local_num]
+                    else:
+                        # 只生成n_levels个样本
+                        samples = np.tile(all_integers, (B, 1))
+
+                    base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                        dtype=X_can_t.dtype, device=X_can_t.device
+                    )
+                else:
+                    # ========== 高斯扰动模式（原始逻辑）==========
+                    sigma = self.local_jitter_frac * span[k]
+                    noise = torch.randn(B, self.local_num, device=X_can_t.device) * sigma
+                    base[:, :, k] = torch.round(
+                        torch.clamp(base[:, :, k] + noise, min=mn[k], max=mx[k])
+                    )
 
             else:
                 # 【保持】连续：高斯扰动

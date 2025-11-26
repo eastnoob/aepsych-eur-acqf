@@ -38,7 +38,11 @@ class LocalSampler:
         variable_types: Optional[Dict[int, str]] = None,
         local_jitter_frac: float = 0.1,
         local_num: int = 4,
-        random_seed: Optional[int] = 42
+        random_seed: Optional[int] = 42,
+        # ========== 混合扰动策略参数 ==========
+        use_hybrid_perturbation: bool = False,
+        exhaustive_level_threshold: int = 3,
+        exhaustive_use_cyclic_fill: bool = True,
     ):
         """
         Args:
@@ -47,11 +51,22 @@ class LocalSampler:
             local_jitter_frac: 扰动幅度（相对特征范围）
             local_num: 每个候选点生成的扰动数
             random_seed: 随机种子（None表示不固定）
+            use_hybrid_perturbation: 是否启用混合扰动策略（默认False，向后兼容）
+            exhaustive_level_threshold: 对多少水平以下的离散变量使用穷举（默认3）
+                                       例如：threshold=3表示2-3水平变量用穷举，≥4水平用高斯
+            exhaustive_use_cyclic_fill: 穷举时是否循环填充到local_num（默认True）
+                                       True:  3水平+local_num=4 → [0,1,2,0]
+                                       False: 3水平+local_num=4 → [0,1,2]
         """
         self.variable_types = variable_types
         self.local_jitter_frac = local_jitter_frac
         self.local_num = int(local_num)  # Convert to int to handle config parsing floats
         self.random_seed = random_seed
+
+        # 混合扰动策略参数
+        self.use_hybrid_perturbation = use_hybrid_perturbation
+        self.exhaustive_level_threshold = int(exhaustive_level_threshold)
+        self.exhaustive_use_cyclic_fill = exhaustive_use_cyclic_fill
 
         # 【修复】使用实例级 RNG（避免全局污染）
         # 参考：https://numpy.org/doc/stable/reference/random/generator.html
@@ -188,7 +203,12 @@ class LocalSampler:
         k: int,
         B: int
     ) -> torch.Tensor:
-        """分类变量扰动：从unique值离散采样"""
+        """分类变量扰动：混合策略（穷举 vs 随机采样）
+
+        策略选择：
+        - 启用混合扰动 且 水平数 ≤ threshold → 穷举所有水平（完全覆盖）
+        - 其他情况 → 随机采样（原始逻辑）
+        """
         unique_vals = self._unique_vals_dict.get(k)
 
         if unique_vals is None or len(unique_vals) == 0:
@@ -199,13 +219,35 @@ class LocalSampler:
                 )
                 self._categorical_fallback_warned.add(k)
             return base
+
+        n_levels = len(unique_vals)
+
+        # 【混合策略】判断是否使用穷举
+        if (self.use_hybrid_perturbation and
+            n_levels <= self.exhaustive_level_threshold):
+            # ========== 穷举模式 ==========
+            if self.exhaustive_use_cyclic_fill:
+                # 循环填充到local_num（均衡覆盖所有水平）
+                # 例如：3水平 + local_num=6 → [0,1,2,0,1,2]
+                n_repeats = (self.local_num // n_levels) + 1
+                samples = np.tile(unique_vals, (B, n_repeats))
+                samples = samples[:, :self.local_num]  # 裁剪到local_num
+            else:
+                # 只生成n_levels个样本（不填充）
+                # 例如：3水平 → [0,1,2] （忽略local_num）
+                samples = np.tile(unique_vals, (B, 1))
+
+            base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                dtype=base.dtype, device=base.device
+            )
         else:
-            # 【修复】使用实例级 RNG（离散采样，完全合法）
+            # ========== 随机采样模式（原始逻辑）==========
             samples = self._np_rng.choice(unique_vals, size=(B, self.local_num))
             base[:, :, k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
             )
-            return base
+
+        return base
 
     def _perturb_integer(
         self,
@@ -216,12 +258,42 @@ class LocalSampler:
         mx: float,
         span: float
     ) -> torch.Tensor:
-        """整数变量扰动：高斯+舍入+夹值"""
-        sigma = self.local_jitter_frac * span
-        noise = torch.randn(B, self.local_num, device=base.device) * sigma
-        base[:, :, k] = torch.round(
-            torch.clamp(base[:, :, k] + noise, min=mn, max=mx)
-        )
+        """整数变量扰动：混合策略（穷举 vs 高斯）
+
+        策略选择：
+        - 启用混合扰动 且 整数水平数 ≤ threshold → 穷举所有整数值
+        - 其他情况 → 高斯扰动+舍入（原始逻辑）
+        """
+        # 计算整数范围内的所有可能值
+        int_min = int(np.floor(mn.item() if torch.is_tensor(mn) else mn))
+        int_max = int(np.ceil(mx.item() if torch.is_tensor(mx) else mx))
+        all_integers = np.arange(int_min, int_max + 1)
+        n_levels = len(all_integers)
+
+        # 【混合策略】判断是否使用穷举
+        if (self.use_hybrid_perturbation and
+            n_levels <= self.exhaustive_level_threshold):
+            # ========== 穷举模式 ==========
+            if self.exhaustive_use_cyclic_fill:
+                # 循环填充到local_num
+                n_repeats = (self.local_num // n_levels) + 1
+                samples = np.tile(all_integers, (B, n_repeats))
+                samples = samples[:, :self.local_num]
+            else:
+                # 只生成n_levels个样本
+                samples = np.tile(all_integers, (B, 1))
+
+            base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                dtype=base.dtype, device=base.device
+            )
+        else:
+            # ========== 高斯扰动模式（原始逻辑）==========
+            sigma = self.local_jitter_frac * span
+            noise = torch.randn(B, self.local_num, device=base.device) * sigma
+            base[:, :, k] = torch.round(
+                torch.clamp(base[:, :, k] + noise, min=mn, max=mx)
+            )
+
         return base
 
     def _perturb_continuous(
