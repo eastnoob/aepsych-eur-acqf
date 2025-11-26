@@ -35,9 +35,22 @@ exhaustive_use_cyclic_fill = True  # 循环填充到local_num（默认True）
 
 # 【推荐调整】提高local_num以适应2-3水平混合场景
 local_num = 6  # LCM(2,3)=6，确保2水平和3水平变量均衡覆盖
+
+# 【可选】自动计算 local_num（v2.1.1新增）
+# auto_compute_local_num = True    # 启用自动计算（默认False，手动配置）
+# auto_local_num_max = 12          # 自动计算上限（默认12，避免成本爆炸）
+#
+# 说明：当启用auto_compute_local_num时，系统会：
+#   1. 找出所有 ≤ exhaustive_level_threshold 的离散变量
+#   2. 计算这些变量水平数的LCM（最小公倍数）
+#   3. 如果LCM > auto_local_num_max，则使用 auto_local_num_max
+#   4. 示例：2水平和3水平变量 → LCM(2,3)=6（自动设置）
+#
+# 优势：适应不同实验场景，无需手动计算LCM
+# 劣势：可能导致local_num过大（因此需要设置上限）
 ```
 
-#### 为什么 local_num=6？
+#### local_num 的设定策略
 
 | 变量类型 | local_num=4 (原始) | local_num=6 (推荐) |
 |----------|-------------------|-------------------|

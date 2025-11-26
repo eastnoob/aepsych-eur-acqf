@@ -19,12 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `use_hybrid_perturbation` (bool, 默认False): 启用混合扰动策略
 - `exhaustive_level_threshold` (int, 默认3): 穷举水平数阈值
 - `exhaustive_use_cyclic_fill` (bool, 默认True): 循环填充到local_num
+- `auto_compute_local_num` (bool, 默认False): 自动计算local_num基于LCM（v2.1.1新增）
+- `auto_local_num_max` (int, 默认12): 自动计算local_num的上限（v2.1.1新增）
 
 **新增/修改模块**:
 - `modules/local_sampler.py`: 独立的局部扰动采样器
   - `_perturb_categorical()`: 分类变量穷举逻辑
   - `_perturb_integer()`: 整数变量穷举逻辑
   - `_perturb_continuous()`: 连续变量扰动（保持不变）
+  - `_compute_lcm()`: 计算最小公倍数（v2.1.1新增）
+  - `_auto_compute_local_num()`: 自动计算local_num基于低水平变量（v2.1.1新增）
 
 - `eur_anova_pair.py`: 主采集函数更新
   - `_make_local_hybrid()`: 集成混合扰动策略
