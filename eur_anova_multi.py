@@ -143,6 +143,10 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         local_jitter_frac: float = 0.1,
         local_num: int = 4,
         random_seed: Optional[int] = 42,
+        # ========== 混合扰动策略参数 ==========
+        use_hybrid_perturbation: bool = False,  # 启用混合扰动（≤3水平变量穷举）
+        exhaustive_level_threshold: int = 3,  # 穷举阈值
+        exhaustive_use_cyclic_fill: bool = True,  # 循环填充
         # ========== 调试 ==========
         debug_components: Union[bool, str] = False,
     ) -> None:
@@ -255,6 +259,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             local_jitter_frac=local_jitter_frac,
             local_num=local_num,
             random_seed=random_seed,
+            use_hybrid_perturbation=use_hybrid_perturbation,
+            exhaustive_level_threshold=exhaustive_level_threshold,
+            exhaustive_use_cyclic_fill=exhaustive_use_cyclic_fill,
         )
 
         # 4. 覆盖度计算
