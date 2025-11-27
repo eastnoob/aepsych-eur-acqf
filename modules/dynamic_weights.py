@@ -28,6 +28,125 @@ from botorch.models.model import Model
 EPS = 1e-8
 
 
+class SPS_Tracker:
+    """Skeleton Prediction Stability (SPS) Tracker
+
+    Measures model convergence by tracking prediction stability on a fixed
+    set of "skeleton" points representing the backbone of the design space.
+
+    Key idea: If the GP's predictions on skeleton points (center + extremes)
+    are stable, the main effects have converged, and we can explore interactions.
+
+    Attributes:
+        skeleton_points: Fixed set of virtual reference points (2d+1 points)
+        prev_predictions: Previous iteration's predictions on skeleton points
+        sensitivity: Amplification factor for prediction changes (default 8.0)
+        ema_alpha: Exponential moving average weight (default 0.7)
+        r_t_smoothed: EMA-smoothed stability metric
+    """
+
+    def __init__(
+        self,
+        bounds: torch.Tensor,
+        sensitivity: float = 8.0,
+        ema_alpha: float = 0.7,
+    ):
+        """Initialize SPS Tracker
+
+        Args:
+            bounds: Tensor of shape (2, d) with [lower_bounds, upper_bounds]
+            sensitivity: Scaling factor for tanh (default 8.0)
+                Higher values amplify small prediction changes
+            ema_alpha: EMA smoothing weight (default 0.7)
+                Higher values = more smoothing
+        """
+        self.bounds = bounds
+        self.sensitivity = sensitivity
+        self.ema_alpha = ema_alpha
+
+        # Generate skeleton points: center + per-dimension extremes
+        self.skeleton_points = self._generate_skeleton_points()
+
+        # State tracking
+        self.prev_predictions: Optional[torch.Tensor] = None
+        self.r_t_smoothed: Optional[float] = None
+
+    def _generate_skeleton_points(self) -> torch.Tensor:
+        """Generate skeleton points: center + 2 extremes per dimension
+
+        Returns:
+            Tensor of shape (2*d + 1, d)
+        """
+        lower = self.bounds[0]  # Shape: (d,)
+        upper = self.bounds[1]  # Shape: (d,)
+        d = lower.shape[0]
+
+        skeleton_points = []
+
+        # 1. Center point
+        center = (lower + upper) / 2.0
+        skeleton_points.append(center)
+
+        # 2. Per-dimension extremes
+        for dim_idx in range(d):
+            # Low extreme: all dims at center, except dim_idx at lower
+            low_point = center.clone()
+            low_point[dim_idx] = lower[dim_idx]
+            skeleton_points.append(low_point)
+
+            # High extreme: all dims at center, except dim_idx at upper
+            high_point = center.clone()
+            high_point[dim_idx] = upper[dim_idx]
+            skeleton_points.append(high_point)
+
+        return torch.stack(skeleton_points)  # Shape: (2*d + 1, d)
+
+    def compute_r_t(self, model: Model) -> float:
+        """Compute stability metric r_t based on skeleton prediction changes
+
+        Args:
+            model: Trained GP model
+
+        Returns:
+            r_t ∈ [0, 1]: 0 = stable (converged), 1 = unstable (not converged)
+        """
+        try:
+            # Get current predictions on skeleton points
+            with torch.no_grad():
+                posterior = model.posterior(self.skeleton_points)
+                current_predictions = posterior.mean.squeeze()  # Shape: (2*d + 1,)
+
+            # First iteration: no previous predictions
+            if self.prev_predictions is None:
+                self.prev_predictions = current_predictions.clone()
+                self.r_t_smoothed = 1.0  # Assume fully unstable initially
+                return 1.0
+
+            # Compute relative change
+            diff = current_predictions - self.prev_predictions
+            delta_t = torch.norm(diff).item() / (torch.norm(current_predictions).item() + EPS)
+
+            # Apply sensitivity scaling and tanh normalization
+            r_t_raw = torch.tanh(torch.tensor(self.sensitivity * delta_t)).item()
+
+            # Apply EMA smoothing
+            if self.r_t_smoothed is None:
+                r_t = r_t_raw
+            else:
+                r_t = self.ema_alpha * self.r_t_smoothed + (1 - self.ema_alpha) * r_t_raw
+
+            # Update state
+            self.prev_predictions = current_predictions.clone()
+            self.r_t_smoothed = r_t
+
+            return float(r_t)
+
+        except Exception as e:
+            import sys
+            print(f"[SPS_Tracker] Error computing r_t: {e}, returning 1.0", file=sys.stderr)
+            return 1.0
+
+
 class DynamicWeightEngine:
     """动态权重计算引擎
 
@@ -44,10 +163,11 @@ class DynamicWeightEngine:
     def __init__(
         self,
         model: Model,
+        bounds: Optional[torch.Tensor] = None,
         # λ_t 参数
         use_dynamic_lambda: bool = True,
-        tau1: float = 0.80,  # [2025-11-25] 从0.7提高到0.8，降低lambda对r_t波动的敏感度
-        tau2: float = 0.20,  # [2025-11-25] 从0.3降低到0.2，配合lambda_t EMA平滑
+        tau1: float = 0.80,
+        tau2: float = 0.20,
         lambda_min: float = 0.1,
         lambda_max: float = 1.0,
         # γ_t 参数
@@ -57,10 +177,18 @@ class DynamicWeightEngine:
         gamma_max: float = 0.5,
         tau_n_min: int = 3,
         tau_n_max: int = 25,
+        # SPS (Skeleton Prediction Stability) 参数
+        use_sps: bool = True,
+        sps_sensitivity: float = 8.0,
+        sps_ema_alpha: float = 0.7,
+        # Adaptive Gamma Safety Brake 参数
+        tau_safe: float = 0.5,
+        gamma_penalty_beta: float = 0.3,
     ):
         """
         Args:
             model: BoTorch模型
+            bounds: Tensor of shape (2, d) with [lower_bounds, upper_bounds]
             use_dynamic_lambda: 是否启用动态λ_t
             tau1: r_t上阈值（>tau1时降低交互权重）
             tau2: r_t下阈值（<tau2时提高交互权重）
@@ -72,8 +200,14 @@ class DynamicWeightEngine:
             gamma_max: 最大覆盖权重（样本稀少）
             tau_n_min: 样本数下阈值
             tau_n_max: 样本数上阈值
+            use_sps: 是否使用SPS方法计算r_t（替代参数变化率）
+            sps_sensitivity: SPS敏感度系数（默认8.0）
+            sps_ema_alpha: SPS平滑系数（默认0.7）
+            tau_safe: Gamma安全刹车阈值（默认0.5）
+            gamma_penalty_beta: Gamma惩罚强度（默认0.3）
         """
         self.model = model
+        self.bounds = bounds
 
         # λ_t 配置
         self.use_dynamic_lambda = use_dynamic_lambda
@@ -87,12 +221,22 @@ class DynamicWeightEngine:
         self.gamma_initial = gamma_initial
         self.gamma_min = gamma_min
         self.gamma_max = gamma_max
-        self.tau_n_min = int(
-            tau_n_min
-        )  # Convert to int to handle config parsing floats
-        self.tau_n_max = int(
-            tau_n_max
-        )  # Convert to int to handle config parsing floats
+        self.tau_n_min = int(tau_n_min)
+        self.tau_n_max = int(tau_n_max)
+
+        # SPS 配置
+        self.use_sps = use_sps
+        self.tau_safe = tau_safe
+        self.gamma_penalty_beta = gamma_penalty_beta
+
+        # 初始化SPS_Tracker（如果启用且有bounds）
+        self.sps_tracker: Optional[SPS_Tracker] = None
+        if self.use_sps and bounds is not None:
+            self.sps_tracker = SPS_Tracker(
+                bounds=bounds,
+                sensitivity=sps_sensitivity,
+                ema_alpha=sps_ema_alpha,
+            )
 
         # 状态缓存
         self._initial_param_vars: Optional[torch.Tensor] = None
@@ -101,16 +245,13 @@ class DynamicWeightEngine:
         self._fitted: bool = False
         self._n_train: int = 0
 
-        # NEW: 参数变化率跟踪（用于新的r_t计算方法）
+        # 旧方法（参数变化率）的状态缓存（仅当不使用SPS时需要）
         self._prev_core_params: Optional[torch.Tensor] = None
         self._initial_param_norm: Optional[float] = None
-        self._params_need_update: bool = True  # 标志：参数历史需要更新
-        self._cached_r_t: Optional[float] = None  # 缓存的 r_t 值
-        self._cached_r_t_n_train: int = -1  # 缓存的 r_t 对应的 n_train
-        self._r_t_smoothed: Optional[float] = None  # EMA 平滑后的 r_t 值
-
-        # [2025-11-25] 添加lambda_t EMA平滑，避免大幅回退
-        self._prev_lambda: Optional[float] = None  # lambda_t的EMA缓存
+        self._params_need_update: bool = True
+        self._cached_r_t: Optional[float] = None
+        self._cached_r_t_n_train: int = -1
+        self._r_t_smoothed: Optional[float] = None
 
         # 参数验证
         if self.tau1 <= self.tau2:
@@ -370,13 +511,13 @@ class DynamicWeightEngine:
         }
 
         直觉：
-        - r_t高（参数不确定，初期）→ 降低交互权重，聚焦主效应（避免过拟合）
-        - r_t低（参数已收敛，后期）→ 提高交互权重，挖掘细节（精雕细琢）
+        - r_t高（模型未收敛，初期）→ 降低交互权重，聚焦主效应
+        - r_t低（模型已收敛，后期）→ 提高交互权重，挖掘交互
 
-        [方案A] 修复r_t计算缺陷：
-        - 降低scale系数(2.0→1.0)，解决r_t虚高问题
-        - 增强EMA平滑(alpha 0.7→0.85)，减少r_t波动
-        - 保持参数驱动的自适应机制
+        [SPS Strategy] 使用Skeleton Prediction Stability:
+        - 通过骨架点预测稳定性区分"探索"vs"未收敛"
+        - 删除lambda_t的EMA平滑（SPS已经平滑r_t，避免双重延迟）
+        - 无状态直接映射，lambda_t快速响应r_t变化
 
         Returns:
             λ_t ∈ [lambda_min, lambda_max]
@@ -384,9 +525,13 @@ class DynamicWeightEngine:
         if not self.use_dynamic_lambda:
             return float(self.lambda_max)
 
-        # 使用参数变化率计算r_t（方案A修复已在compute_relative_main_variance中）
-        r_t = self.compute_relative_main_variance()
+        # 计算r_t: 优先使用SPS，回退到参数变化率
+        if self.use_sps and self.sps_tracker is not None:
+            r_t = self.sps_tracker.compute_r_t(self.model)
+        else:
+            r_t = self.compute_relative_main_variance()
 
+        # 无状态直接映射（删除EMA，避免双重平滑）
         if r_t > self.tau1:
             lambda_t = self.lambda_min
         elif r_t < self.tau2:
@@ -396,30 +541,26 @@ class DynamicWeightEngine:
             t_ratio = (self.tau1 - r_t) / (self.tau1 - self.tau2 + EPS)
             lambda_t = self.lambda_min + (self.lambda_max - self.lambda_min) * t_ratio
 
-        # [2025-11-25] 对lambda_t应用EMA平滑，避免大幅回退
-        # alpha=0.6: 60%保留历史，40%响应当前值，平衡稳定性和响应性
-        if self._prev_lambda is not None:
-            lambda_t = 0.6 * self._prev_lambda + 0.4 * lambda_t
-        self._prev_lambda = lambda_t  # 更新缓存
-
         self._current_lambda = float(lambda_t)
         return float(lambda_t)
 
     def compute_gamma(self) -> float:
-        """计算动态覆盖度权重 γ_t
+        """计算动态覆盖度权重 γ_t with Safety Brake
 
-        两级调整：
-        1. 基于样本数的线性插值
+        策略：
+        1. 基于样本数的线性衰减（Base Schedule）
            - n < τ_n_min: γ = γ_max（样本少，重视覆盖）
            - n ≥ τ_n_max: γ = γ_min（样本多，重视信息）
            - 中间：线性插值
 
-        2. 基于参数方差比的二阶调整
-           - r_t > τ_1: γ ↑ 20%（参数不确定，初期，广撒网探索）
-           - r_t < τ_2: γ ↓ 20%（参数已收敛，后期，聚焦利用）
+        2. 安全刹车（Safety Brake）
+           如果r_t > tau_safe，说明主效应（全局结构）仍不稳定，
+           必须提高gamma强制空间覆盖以稳定模型：
+
+           γ_t = γ_base + β × (r_t - tau_safe)  if r_t > tau_safe
 
         Returns:
-            γ_t ∈ [0.05, 1.0]（硬夹值确保稳定性）
+            γ_t ∈ [gamma_min, 1.0]
         """
         if not self.use_dynamic_gamma or not self._fitted:
             return float(self.gamma_initial)
@@ -427,7 +568,7 @@ class DynamicWeightEngine:
         try:
             n_train = self._n_train
 
-            # 1. 基于样本数的线性调整
+            # 1. 基于样本数的线性衰减
             if n_train < self.tau_n_min:
                 gamma_base = self.gamma_max
             elif n_train >= self.tau_n_max:
@@ -438,18 +579,22 @@ class DynamicWeightEngine:
                     self.gamma_max - (self.gamma_max - self.gamma_min) * t_ratio
                 )
 
-            # 2. 基于r_t的二阶调整
-            r_t = self.compute_relative_main_variance()
-
-            if r_t > self.tau1:
-                gamma_adjusted = gamma_base * 1.2  # 提高覆盖
-            elif r_t < self.tau2:
-                gamma_adjusted = gamma_base * 0.8  # 降低覆盖
+            # 2. 安全刹车：高不确定性时强制覆盖
+            # 获取r_t（与lambda_t使用同一来源）
+            if self.use_sps and self.sps_tracker is not None:
+                r_t = self.sps_tracker.r_t_smoothed if self.sps_tracker.r_t_smoothed is not None else 1.0
             else:
-                gamma_adjusted = gamma_base
+                r_t = self.compute_relative_main_variance()
+
+            if r_t > self.tau_safe:
+                # Panic mode: 增加gamma惩罚
+                penalty = self.gamma_penalty_beta * (r_t - self.tau_safe)
+                gamma_t = gamma_base + penalty
+            else:
+                gamma_t = gamma_base
 
             # 硬夹值确保稳定
-            gamma_t = float(np.clip(gamma_adjusted, 0.05, 1.0))
+            gamma_t = float(np.clip(gamma_t, self.gamma_min, 1.0))
             self._current_gamma = gamma_t
             return gamma_t
 
