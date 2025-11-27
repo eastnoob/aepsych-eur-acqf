@@ -134,6 +134,12 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         tau_n_max: Optional[int] = None,
         total_budget: Optional[int] = None,  # 实验预算（自动配置tau_n_max）
         coverage_method: str = "min_distance",
+        # ========== SPS (Skeleton Prediction Stability) 参数 ==========
+        use_sps: bool = True,  # 是否使用SPS方法计算r_t
+        sps_sensitivity: float = 8.0,  # SPS敏感度系数
+        sps_ema_alpha: float = 0.7,  # SPS平滑系数
+        tau_safe: float = 0.5,  # Gamma安全刹车阈值
+        gamma_penalty_beta: float = 0.3,  # Gamma惩罚强度
         # ========== 融合方式 ==========
         fusion_method: str = "additive",  # 【新增】"additive" 或 "multiplicative"
         # ========== 变量类型 ==========
@@ -241,8 +247,16 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         self.ordinal_helper = OrdinalMetricsHelper(model)
 
         # 2. 动态权重引擎
+        # Get bounds from model if available
+        bounds = None
+        if hasattr(model, 'bounds'):
+            bounds = model.bounds
+        elif hasattr(model, '_bounds'):
+            bounds = model._bounds
+
         self.weight_engine = DynamicWeightEngine(
             model=model,
+            bounds=bounds,
             use_dynamic_lambda=use_dynamic_lambda,
             tau1=tau1,
             tau2=tau2,
@@ -254,6 +268,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             gamma_max=gamma_max,
             tau_n_min=tau_n_min,
             tau_n_max=tau_n_max,
+            use_sps=use_sps,
+            sps_sensitivity=sps_sensitivity,
+            sps_ema_alpha=sps_ema_alpha,
+            tau_safe=tau_safe,
+            gamma_penalty_beta=gamma_penalty_beta,
         )
 
         # 3. 局部采样器
