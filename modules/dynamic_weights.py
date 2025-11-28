@@ -170,6 +170,12 @@ class DynamicWeightEngine:
         tau2: float = 0.20,
         lambda_min: float = 0.1,
         lambda_max: float = 1.0,
+        # 分段Lambda参数（新增）
+        use_piecewise_lambda: bool = False,
+        piecewise_phase1_end: int = 35,
+        piecewise_phase2_end: int = 50,
+        piecewise_lambda_low: float = 0.35,
+        piecewise_lambda_high: float = 0.70,
         # γ_t 参数
         use_dynamic_gamma: bool = True,
         gamma_initial: float = 0.3,
@@ -216,6 +222,13 @@ class DynamicWeightEngine:
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
 
+        # 分段Lambda配置
+        self.use_piecewise_lambda = use_piecewise_lambda
+        self.piecewise_phase1_end = int(piecewise_phase1_end)
+        self.piecewise_phase2_end = int(piecewise_phase2_end)
+        self.piecewise_lambda_low = float(piecewise_lambda_low)
+        self.piecewise_lambda_high = float(piecewise_lambda_high)
+
         # γ_t 配置
         self.use_dynamic_gamma = use_dynamic_gamma
         self.gamma_initial = gamma_initial
@@ -236,6 +249,13 @@ class DynamicWeightEngine:
                 bounds=bounds,
                 sensitivity=sps_sensitivity,
                 ema_alpha=sps_ema_alpha,
+            )
+        elif self.use_sps and bounds is None:
+            import warnings
+            warnings.warn(
+                "use_sps=True but bounds=None, SPS will not be available. "
+                "Falling back to parameter change rate method.",
+                UserWarning
             )
 
         # 状态缓存
@@ -503,6 +523,13 @@ class DynamicWeightEngine:
     def compute_lambda(self) -> float:
         """计算动态交互效应权重 λ_t
 
+        支持两种策略：
+        1. r_t-based (原策略): 基于模型收敛度动态调整
+        2. 分段策略 (新增): 基于样本数分段控制
+           - Phase 1 (n < phase1_end): lambda = lambda_low
+           - Phase 2 (phase1_end ≤ n < phase2_end): lambda线性增长
+           - Phase 3 (n ≥ phase2_end): lambda = lambda_high
+
         分段函数：
         λ_t(r_t) = {
             λ_min,                                          if r_t > τ_1
@@ -525,6 +552,30 @@ class DynamicWeightEngine:
         if not self.use_dynamic_lambda:
             return float(self.lambda_max)
 
+        # 【新增】分段Lambda策略（基于样本数）
+        if self.use_piecewise_lambda:
+            n = self._n_train
+
+            if n < self.piecewise_phase1_end:
+                # Phase 1: 低lambda，建立主效应
+                lambda_t = self.piecewise_lambda_low
+            elif n >= self.piecewise_phase2_end:
+                # Phase 3: 高lambda，开发交互
+                lambda_t = self.piecewise_lambda_high
+            else:
+                # Phase 2: 线性增长
+                phase2_span = self.piecewise_phase2_end - self.piecewise_phase1_end
+                progress = (n - self.piecewise_phase1_end) / phase2_span
+                lambda_t = self.piecewise_lambda_low + (
+                    self.piecewise_lambda_high - self.piecewise_lambda_low
+                ) * progress
+
+            # 边界保护
+            lambda_t = np.clip(lambda_t, self.lambda_min, self.lambda_max)
+            self._current_lambda = float(lambda_t)
+            return float(lambda_t)
+
+        # 【原有】r_t-based策略
         # 计算r_t: 优先使用SPS，回退到参数变化率
         if self.use_sps and self.sps_tracker is not None:
             r_t = self.sps_tracker.compute_r_t(self.model)

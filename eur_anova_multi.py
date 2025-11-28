@@ -125,6 +125,12 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         tau2: float = 0.3,
         lambda_min: float = 0.1,
         lambda_max: float = 1.0,
+        # 分段Lambda参数（新增）
+        use_piecewise_lambda: bool = False,
+        piecewise_phase1_end: int = 35,
+        piecewise_phase2_end: int = 50,
+        piecewise_lambda_low: float = 0.35,
+        piecewise_lambda_high: float = 0.70,
         # ========== 覆盖度参数 ==========
         gamma: float = 0.3,
         use_dynamic_gamma: bool = True,
@@ -247,12 +253,21 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         self.ordinal_helper = OrdinalMetricsHelper(model)
 
         # 2. 动态权重引擎
-        # Get bounds from model if available
+        # Get bounds from model or infer from training data dimensions
         bounds = None
         if hasattr(model, 'bounds'):
             bounds = model.bounds
         elif hasattr(model, '_bounds'):
             bounds = model._bounds
+        elif hasattr(model, 'train_inputs') and model.train_inputs:
+            # Infer bounds from training data dimensions
+            # This is the default fallback when model doesn't have explicit bounds
+            X_train = model.train_inputs[0]
+            if X_train.ndim >= 2:
+                num_dims = X_train.shape[-1]
+                # Use [0, 1] per dimension as default
+                # This works for normalized/standardized data
+                bounds = torch.tensor([[0.0] * num_dims, [1.0] * num_dims], dtype=torch.float32)
 
         self.weight_engine = DynamicWeightEngine(
             model=model,
@@ -262,6 +277,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             tau2=tau2,
             lambda_min=lambda_min,
             lambda_max=lambda_max,
+            use_piecewise_lambda=use_piecewise_lambda,
+            piecewise_phase1_end=piecewise_phase1_end,
+            piecewise_phase2_end=piecewise_phase2_end,
+            piecewise_lambda_low=piecewise_lambda_low,
+            piecewise_lambda_high=piecewise_lambda_high,
             use_dynamic_gamma=use_dynamic_gamma,
             gamma_initial=gamma,
             gamma_min=gamma_min,
@@ -328,16 +348,20 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
     def _ensure_fresh_data(self) -> None:
         """同步训练数据并更新所有模块"""
+        import sys
         if not hasattr(self.model, "train_inputs") or self.model.train_inputs is None:
+            print(f"[EUR _ensure_fresh_data] No train_inputs on model", file=sys.stderr)
             return
 
         X_t = self.model.train_inputs[0]
         y_t = getattr(self.model, "train_targets", None)
 
         if X_t is None or y_t is None:
+            print(f"[EUR _ensure_fresh_data] X_t or y_t is None", file=sys.stderr)
             return
 
         n = X_t.shape[0]
+        print(f"[EUR _ensure_fresh_data] model_id={id(self.model)}, train_inputs.shape={X_t.shape}, n={n}, _last_hist_n={self._last_hist_n}, _fitted={self._fitted}", file=sys.stderr)
 
         # 首次初始化或数据更新
         if (not self._fitted) or (n != self._last_hist_n):
@@ -351,7 +375,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             # 更新各模块
             self.local_sampler.update_data(self._X_train_np)
             self.coverage_helper.update_training_data(self._X_train_np)
+            print(f"[EUR _ensure_fresh_data] Updating weight_engine with n={n}", file=sys.stderr)
             self.weight_engine.update_training_status(n, self._fitted)
+            print(f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}", file=sys.stderr)
 
             # 验证交互索引并过滤越界项
             self._pairs, self._triplets = validate_interaction_indices(
@@ -437,6 +463,8 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         Returns:
             (B,) 采集值（越大越好）
         """
+        import sys
+        print(f"[EUR forward] Called with X.shape={X.shape}", file=sys.stderr)
         self._ensure_fresh_data()
 
         if (
