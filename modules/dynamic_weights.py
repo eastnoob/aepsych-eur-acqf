@@ -112,15 +112,32 @@ class SPS_Tracker:
             r_t ∈ [0, 1]: 0 = stable (converged), 1 = unstable (not converged)
         """
         try:
+            # 【关键修复】强制模型重新计算预测,不使用缓存
+            # 1. 确保模型处于eval模式
+            training_mode = model.training
+            model.eval()
+            
+            # 2. 清除可能的缓存(如果存在)
+            if hasattr(model, 'prediction_strategy'):
+                model.prediction_strategy = None
+            
             # Get current predictions on skeleton points
             with torch.no_grad():
-                posterior = model.posterior(self.skeleton_points)
-                current_predictions = posterior.mean.squeeze()  # Shape: (2*d + 1,)
+                # 强制重新计算 - 不使用observation_noise避免缓存
+                posterior = model.posterior(self.skeleton_points, observation_noise=False)
+                current_predictions = posterior.mean.squeeze().detach().clone()  # Shape: (2*d + 1,)
+            
+            # 恢复原训练模式
+            if training_mode:
+                model.train()
+            else:
+                model.eval()
 
             # First iteration: no previous predictions
             if self.prev_predictions is None:
                 self.prev_predictions = current_predictions.clone()
                 self.r_t_smoothed = 1.0  # Assume fully unstable initially
+                logger.warning(f"[SPS] First call: pred_mean={current_predictions.mean().item():.4f}, pred_std={current_predictions.std().item():.4f}")
                 return 1.0
 
             # Compute relative change
@@ -128,6 +145,7 @@ class SPS_Tracker:
             delta_t = torch.norm(diff).item() / (
                 torch.norm(current_predictions).item() + EPS
             )
+            logger.warning(f"[SPS] diff_norm={torch.norm(diff).item():.6f}, pred_norm={torch.norm(current_predictions).item():.4f}, delta_t={delta_t:.6f}")
 
             # Apply sensitivity scaling and tanh normalization
             r_t_raw = torch.tanh(torch.tensor(self.sensitivity * delta_t)).item()
@@ -412,7 +430,9 @@ class DynamicWeightEngine:
         """
         # 【缓存机制】如果当前训练迭代的 r_t 已计算过，直接返回缓存值
         if self._cached_r_t is not None and self._cached_r_t_n_train == self._n_train:
-            logger.debug(f"[r_t n={self._n_train}] Returning cached r_t={self._cached_r_t:.6f}")
+            logger.debug(
+                f"[r_t n={self._n_train}] Returning cached r_t={self._cached_r_t:.6f}"
+            )
             return self._cached_r_t
 
         # 提取核心参数
@@ -428,7 +448,9 @@ class DynamicWeightEngine:
             self._cached_r_t = r_t
             self._cached_r_t_n_train = self._n_train
             self._params_need_update = False  # 已更新，清除标志
-            logger.debug(f"[r_t n={self._n_train}] First iteration, r_t={r_t:.6f}, saved baseline params")
+            logger.debug(
+                f"[r_t n={self._n_train}] First iteration, r_t={r_t:.6f}, saved baseline params"
+            )
             return r_t
 
         # 检查参数数量变化（模型结构改变）
@@ -590,7 +612,7 @@ class DynamicWeightEngine:
             )
             return 1.0
 
-    def compute_lambda(self) -> float:
+    def compute_lambda(self, model: Optional[Model] = None) -> float:
         """计算动态交互效应权重 λ_t
 
         支持两种策略：
@@ -616,11 +638,17 @@ class DynamicWeightEngine:
         - 删除lambda_t的EMA平滑（SPS已经平滑r_t，避免双重延迟）
         - 无状态直接映射，lambda_t快速响应r_t变化
 
+        Args:
+            model: 当前模型实例（如果None则使用初始化时保存的模型）
+
         Returns:
             λ_t ∈ [lambda_min, lambda_max]
         """
         if not self.use_dynamic_lambda:
             return float(self.lambda_max)
+
+        # 【修复】使用传入的模型或初始化时保存的模型
+        current_model = model if model is not None else self.model
 
         # 【新增】分段Lambda策略（基于样本数）
         if self.use_piecewise_lambda:
@@ -650,7 +678,7 @@ class DynamicWeightEngine:
         # 【原有】r_t-based策略
         # 计算r_t: 优先使用SPS，回退到参数变化率
         if self.use_sps and self.sps_tracker is not None:
-            r_t = self.sps_tracker.compute_r_t(self.model)
+            r_t = self.sps_tracker.compute_r_t(current_model)
         else:
             r_t = self.compute_relative_main_variance()
 
@@ -667,7 +695,7 @@ class DynamicWeightEngine:
         self._current_lambda = float(lambda_t)
         return float(lambda_t)
 
-    def compute_gamma(self) -> float:
+    def compute_gamma(self, model: Optional[Model] = None) -> float:
         """计算动态覆盖度权重 γ_t with Safety Brake
 
         策略：
@@ -682,11 +710,17 @@ class DynamicWeightEngine:
 
            γ_t = γ_base + β × (r_t - tau_safe)  if r_t > tau_safe
 
+        Args:
+            model: 当前模型实例（如果None则使用初始化时保存的模型）
+
         Returns:
             γ_t ∈ [gamma_min, 1.0]
         """
         if not self.use_dynamic_gamma or not self._fitted:
             return float(self.gamma_initial)
+
+        # 【修复】使用传入的模型或初始化时保存的模型
+        current_model = model if model is not None else self.model
 
         try:
             n_train = self._n_train
@@ -703,8 +737,11 @@ class DynamicWeightEngine:
                 )
 
             # 2. 安全刹车：高不确定性时强制覆盖
-            # 获取r_t（与lambda_t使用同一来源）
+            # 【修复】获取r_t（与lambda_t使用同一来源，传入当前模型）
             if self.use_sps and self.sps_tracker is not None:
+                # 先调用compute_r_t更新状态
+                self.sps_tracker.compute_r_t(current_model)
+                # 再读取平滑后的值
                 r_t = (
                     self.sps_tracker.r_t_smoothed
                     if self.sps_tracker.r_t_smoothed is not None
