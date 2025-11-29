@@ -627,10 +627,14 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # 【修复】确保数据已同步（这样 _last_hist_n 会被正确更新）
         self._ensure_fresh_data()
 
-        # 【修复】获取 r_t 值
-        # 即使模型未训练，也尝试计算 r_t（会返回默认值）
+        # 【修复】获取 r_t 值 - 与 compute_lambda() 使用相同的来源
+        # 确保诊断信息中的 r_t 反映实际用于计算 lambda_t 的值
         try:
-            r_t = self.weight_engine.compute_relative_main_variance()
+            # 使用与 compute_lambda 相同的逻辑获取 r_t
+            if self.weight_engine.use_sps and self.weight_engine.sps_tracker is not None:
+                r_t = self.weight_engine.sps_tracker.compute_r_t(self.model)
+            else:
+                r_t = self.weight_engine.compute_relative_main_variance()
         except Exception:
             # 如果计算失败，返回 None
             r_t = None
