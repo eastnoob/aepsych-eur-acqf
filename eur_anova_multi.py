@@ -545,13 +545,14 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
         # ========== 加权融合 ==========
         # 计算动态权重
+        # 【修复】传入当前模型实例
         if self.use_dynamic_lambda_2:
-            lambda_2_t = self.weight_engine.compute_lambda()
+            lambda_2_t = self.weight_engine.compute_lambda(model=self.model)
         else:
             lambda_2_t = self.lambda_2
 
-        # 【修复】确保 gamma_t 也被计算并保存
-        gamma_t_computed = self.weight_engine.compute_gamma()
+        # 【修复】确保 gamma_t 也被计算并保存，传入当前模型
+        gamma_t_computed = self.weight_engine.compute_gamma(model=self.model)
 
         lambda_3_t = self.lambda_3
 
@@ -591,7 +592,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         cov_n = _stdz(cov_t)
 
         # ========== 最终融合 (支持加法和乘法) ==========
-        gamma_t = self.weight_engine.compute_gamma()
+        gamma_t = self.weight_engine.compute_gamma(model=self.model)
 
         if self.fusion_method == "multiplicative":
             # 乘法融合: acq = info * (1 + gamma * cov)
@@ -623,15 +624,34 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
     # ========== 诊断接口 ==========
 
     def get_diagnostics(self) -> Dict[str, Any]:
-        """获取完整诊断信息"""
+        """获取完整诊断信息
+        
+        【重要修复】主动计算动态权重而非读取缓存
+        - 调用 compute_lambda() 和 compute_gamma() 触发实际计算
+        - 确保诊断信息反映当前模型状态
+        """
         # 【修复】确保数据已同步（这样 _last_hist_n 会被正确更新）
         self._ensure_fresh_data()
+
+        # 【关键修复】主动计算动态权重（而非读取缓存）
+        # 这确保即使 forward() 未被调用，诊断信息也能反映真实的权重
+        # 【再次修复】传入当前模型实例，确保使用最新的模型状态
+        try:
+            lambda_t_computed = self.weight_engine.compute_lambda(model=self.model)
+            gamma_t_computed = self.weight_engine.compute_gamma(model=self.model)
+        except Exception as compute_err:
+            # 如果计算失败，回退到缓存值
+            lambda_t_computed = self.weight_engine.get_current_lambda()
+            gamma_t_computed = self.weight_engine.get_current_gamma()
 
         # 【修复】获取 r_t 值 - 与 compute_lambda() 使用相同的来源
         # 确保诊断信息中的 r_t 反映实际用于计算 lambda_t 的值
         try:
             # 使用与 compute_lambda 相同的逻辑获取 r_t
-            if self.weight_engine.use_sps and self.weight_engine.sps_tracker is not None:
+            if (
+                self.weight_engine.use_sps
+                and self.weight_engine.sps_tracker is not None
+            ):
                 r_t = self.weight_engine.sps_tracker.compute_r_t(self.model)
             else:
                 r_t = self.weight_engine.compute_relative_main_variance()
@@ -640,10 +660,10 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             r_t = None
 
         diag = self.diagnostics.get_diagnostics(
-            lambda_t=self.weight_engine.get_current_lambda(),
-            gamma_t=self.weight_engine.get_current_gamma(),
+            lambda_t=lambda_t_computed,
+            gamma_t=gamma_t_computed,
             lambda_2=(
-                self.weight_engine.get_current_lambda()
+                lambda_t_computed
                 if self.use_dynamic_lambda_2
                 else self.lambda_2
             ),
