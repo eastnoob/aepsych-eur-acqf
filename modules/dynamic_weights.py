@@ -72,6 +72,10 @@ class SPS_Tracker:
         self.prev_predictions: Optional[torch.Tensor] = None
         self.r_t_smoothed: Optional[float] = None
 
+        # 缓存机制:每次迭代(新的train_size)第一次compute_r_t的返回值
+        self._last_train_size: int = 0  # 上次记录的训练集大小
+        self._cached_r_t: Optional[float] = None  # 当前迭代缓存的r_t值
+
     def _generate_skeleton_points(self) -> torch.Tensor:
         """Generate skeleton points: center + 2 extremes per dimension
 
@@ -105,6 +109,9 @@ class SPS_Tracker:
     def compute_r_t(self, model: Model) -> float:
         """Compute stability metric r_t based on skeleton prediction changes
 
+        使用缓存机制:同一次迭代(相同train_size)多次调用返回第一次计算的值
+        这确保CSV记录的r_t是真实用于计算lambda_t的值,而不是后续调用的近似0值
+
         Args:
             model: Trained GP model
 
@@ -112,21 +119,38 @@ class SPS_Tracker:
             r_t ∈ [0, 1]: 0 = stable (converged), 1 = unstable (not converged)
         """
         try:
+            # 获取模型训练数据量以便调试
+            train_size = 0
+            if hasattr(model, "train_inputs") and model.train_inputs is not None:
+                if (
+                    isinstance(model.train_inputs, tuple)
+                    and len(model.train_inputs) > 0
+                ):
+                    train_size = model.train_inputs[0].shape[0]
+
+            # 【缓存机制】如果train_size没变,返回缓存的r_t值
+            if train_size == self._last_train_size and self._cached_r_t is not None:
+                return self._cached_r_t
+
             # 【关键修复】强制模型重新计算预测,不使用缓存
             # 1. 确保模型处于eval模式
             training_mode = model.training
             model.eval()
-            
+
             # 2. 清除可能的缓存(如果存在)
-            if hasattr(model, 'prediction_strategy'):
+            if hasattr(model, "prediction_strategy"):
                 model.prediction_strategy = None
-            
+
             # Get current predictions on skeleton points
             with torch.no_grad():
                 # 强制重新计算 - 不使用observation_noise避免缓存
-                posterior = model.posterior(self.skeleton_points, observation_noise=False)
-                current_predictions = posterior.mean.squeeze().detach().clone()  # Shape: (2*d + 1,)
-            
+                posterior = model.posterior(
+                    self.skeleton_points, observation_noise=False
+                )
+                current_predictions = (
+                    posterior.mean.squeeze().detach().clone()
+                )  # Shape: (2*d + 1,)
+
             # 恢复原训练模式
             if training_mode:
                 model.train()
@@ -137,7 +161,9 @@ class SPS_Tracker:
             if self.prev_predictions is None:
                 self.prev_predictions = current_predictions.clone()
                 self.r_t_smoothed = 1.0  # Assume fully unstable initially
-                logger.warning(f"[SPS] First call: pred_mean={current_predictions.mean().item():.4f}, pred_std={current_predictions.std().item():.4f}")
+                logger.warning(
+                    f"[SPS] First call: train_size={train_size}, pred_mean={current_predictions.mean().item():.4f}, pred_std={current_predictions.std().item():.4f}"
+                )
                 return 1.0
 
             # Compute relative change
@@ -145,7 +171,9 @@ class SPS_Tracker:
             delta_t = torch.norm(diff).item() / (
                 torch.norm(current_predictions).item() + EPS
             )
-            logger.warning(f"[SPS] diff_norm={torch.norm(diff).item():.6f}, pred_norm={torch.norm(current_predictions).item():.4f}, delta_t={delta_t:.6f}")
+            logger.warning(
+                f"[SPS] train_size={train_size}, diff_norm={torch.norm(diff).item():.6f}, pred_norm={torch.norm(current_predictions).item():.4f}, delta_t={delta_t:.6f}"
+            )
 
             # Apply sensitivity scaling and tanh normalization
             r_t_raw = torch.tanh(torch.tensor(self.sensitivity * delta_t)).item()
@@ -161,6 +189,16 @@ class SPS_Tracker:
             # Update state
             self.prev_predictions = current_predictions.clone()
             self.r_t_smoothed = r_t
+
+            # 【缓存机制】保存当前迭代的r_t值和train_size
+            self._last_train_size = train_size
+            self._cached_r_t = float(r_t)
+
+            # 每次迭代第一次调用时记录(当有真实变化时)
+            if delta_t > 0.001:  # 只记录有意义的变化
+                logger.info(
+                    f"[SPS] Computed r_t: train_size={train_size}, delta_t={delta_t:.6f}, r_t_raw={r_t_raw:.6f}, r_t_smoothed={r_t:.6f}"
+                )
 
             return float(r_t)
 

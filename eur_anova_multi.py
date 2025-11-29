@@ -625,7 +625,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
     def get_diagnostics(self) -> Dict[str, Any]:
         """获取完整诊断信息
-        
+
         【重要修复】主动计算动态权重而非读取缓存
         - 调用 compute_lambda() 和 compute_gamma() 触发实际计算
         - 确保诊断信息反映当前模型状态
@@ -663,9 +663,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             lambda_t=lambda_t_computed,
             gamma_t=gamma_t_computed,
             lambda_2=(
-                lambda_t_computed
-                if self.use_dynamic_lambda_2
-                else self.lambda_2
+                lambda_t_computed if self.use_dynamic_lambda_2 else self.lambda_2
             ),
             lambda_3=self.lambda_3,
             n_train=self._last_hist_n if self._fitted else 0,
