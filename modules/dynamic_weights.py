@@ -412,20 +412,23 @@ class DynamicWeightEngine:
         """
         # 【缓存机制】如果当前训练迭代的 r_t 已计算过，直接返回缓存值
         if self._cached_r_t is not None and self._cached_r_t_n_train == self._n_train:
+            logger.debug(f"[r_t n={self._n_train}] Returning cached r_t={self._cached_r_t:.6f}")
             return self._cached_r_t
 
         # 提取核心参数
         current_params = self._extract_core_parameters(model)
 
-        # 首次迭代：最大不确定性
+        # 首次迭代：最大不确定性，并保存参数作为基线
         if self._prev_core_params is None:
             self._prev_core_params = current_params.clone()
             self._initial_param_norm = torch.norm(current_params).item()
             r_t = 1.0
+            self._r_t_smoothed = r_t  # 初始化EMA状态
             # 缓存结果
             self._cached_r_t = r_t
             self._cached_r_t_n_train = self._n_train
-            logger.debug(f"[r_t n={self._n_train}] First iteration, r_t={r_t:.6f}")
+            self._params_need_update = False  # 已更新，清除标志
+            logger.debug(f"[r_t n={self._n_train}] First iteration, r_t={r_t:.6f}, saved baseline params")
             return r_t
 
         # 检查参数数量变化（模型结构改变）
@@ -441,7 +444,7 @@ class DynamicWeightEngine:
             self._cached_r_t_n_train = self._n_train
             return r_t
 
-        # 计算相对变化
+        # 计算相对变化（当前参数 vs 上次保存的参数）
         param_diff = current_params - self._prev_core_params
         current_norm = torch.norm(current_params).item()
         diff_norm = torch.norm(param_diff).item()
@@ -450,26 +453,15 @@ class DynamicWeightEngine:
         norm_denom = max(current_norm, 1e-8)
         change_rate = diff_norm / norm_denom
 
-        # 【关键修复】只有模型重新训练后才更新历史
-        # 使用标志判断：_params_need_update 由 update_training_status 设置
-        if self._params_need_update:
-            self._prev_core_params = current_params.clone()
-            self._params_need_update = False  # 清除标志
+        # 【关键修复】每次训练后都更新参数历史
+        # 无论 _params_need_update 标志如何，模型参数变化就应该被追踪
+        # 这确保 r_t 能正确反映每次模型refit后的参数变化
+        self._prev_core_params = current_params.clone()
+        self._params_need_update = False  # 清除标志
 
-        # # 【关键修复】强制更新参数历史（每次调用都更新）
-        # # 这确保即使 _params_need_update 没有正确设置，也能跟踪参数变化
-        # self._prev_core_params = current_params.clone()
-        # self._params_need_update = False  # 清除标志
-
-        # Debug 输出（只在真正更新时打印）
+        # Debug 输出
         logger.debug(
-            f"[r_t n={self._n_train}] Params updated: change_rate={change_rate:.6f}, "
-            f"diff_norm={diff_norm:.6e}, current_norm={current_norm:.6e}"
-        )
-
-        # Debug 输出（每次都打印）
-        logger.debug(
-            f"[r_t n={self._n_train}] Params updated: change_rate={change_rate:.6f}, "
+            f"[r_t n={self._n_train}] change_rate={change_rate:.6f}, "
             f"diff_norm={diff_norm:.6e}, current_norm={current_norm:.6e}"
         )
 
