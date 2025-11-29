@@ -30,8 +30,7 @@ class CoverageHelper:
         self,
         X_train_np: Optional[np.ndarray] = None,
         variable_types: Optional[Dict[int, str]] = None,
-        coverage_method: str = "min_distance",
-        ard_weights: Optional[np.ndarray] = None,
+        coverage_method: str = "min_distance"
     ):
         """
         Args:
@@ -40,12 +39,10 @@ class CoverageHelper:
             coverage_method: 覆盖度计算方法
                            'min_distance': 到最近历史点的距离
                            'mean_distance': 到所有历史点的平均距离
-            ard_weights: ARD权重数组（归一化后）
         """
         self._X_train_np = X_train_np
         self.variable_types = variable_types
         self.coverage_method = coverage_method
-        self.ard_weights = ard_weights
 
     def update_training_data(self, X_train_np: np.ndarray) -> None:
         """更新训练数据
@@ -68,7 +65,9 @@ class CoverageHelper:
             # 【修复】统一行为：无历史样本时返回最大覆盖（鼓励探索）
             # 与 gower_distance.compute_coverage 的行为一致（返回1.0）
             return torch.ones(
-                X_can_t.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+                X_can_t.shape[0],
+                dtype=X_can_t.dtype,
+                device=X_can_t.device
             )
 
         # 转换为numpy
@@ -83,7 +82,9 @@ class CoverageHelper:
 
         if d_can != d_hist and d_can != -1 and d_hist != -1:
             return torch.zeros(
-                X_np.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+                X_np.shape[0],
+                dtype=X_can_t.dtype,
+                device=X_can_t.device
             )
 
         # 处理变量类型字典（只保留有效维度）
@@ -102,14 +103,16 @@ class CoverageHelper:
                 self._X_train_np,
                 variable_types=vt,
                 ranges=None,
-                method=self.coverage_method,
-                weights=self.ard_weights,
+                method=self.coverage_method
             )
             cov_t = torch.from_numpy(cov_np).to(
-                dtype=X_can_t.dtype, device=X_can_t.device
+                dtype=X_can_t.dtype,
+                device=X_can_t.device
             )
             return cov_t
         except Exception:
             return torch.zeros(
-                X_np.shape[0], dtype=X_can_t.dtype, device=X_can_t.device
+                X_np.shape[0],
+                dtype=X_can_t.dtype,
+                device=X_can_t.device
             )

@@ -17,7 +17,7 @@ from .anova_effects import (
     PairwiseEffect,
     ThreeWayEffect,
     ANOVAEffectEngine,
-    create_effects_from_config
+    create_effects_from_config,
 )
 
 from .ordinal_metrics import OrdinalMetricsHelper
@@ -32,7 +32,8 @@ from .config_parser import (
     parse_interaction_pairs,
     parse_interaction_triplets,
     parse_variable_types,
-    validate_interaction_indices
+    parse_ard_weights,
+    validate_interaction_indices,
 )
 
 from .diagnostics import DiagnosticsManager
@@ -58,6 +59,7 @@ __all__ = [
     "parse_interaction_pairs",
     "parse_interaction_triplets",
     "parse_variable_types",
+    "parse_ard_weights",
     "validate_interaction_indices",
     # 诊断
     "DiagnosticsManager",

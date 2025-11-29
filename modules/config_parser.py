@@ -21,10 +21,11 @@ Example:
 from __future__ import annotations
 from typing import Union, Sequence, Tuple, List, Dict, Optional
 import warnings
+import numpy as np
 
 
 def parse_interaction_pairs(
-    interaction_pairs: Union[str, Sequence[Union[str, Tuple[int, int]]]]
+    interaction_pairs: Union[str, Sequence[Union[str, Tuple[int, int]]]],
 ) -> List[Tuple[int, int]]:
     """解析交互对输入
 
@@ -103,9 +104,7 @@ def parse_interaction_pairs(
                 elif "|" in ps:
                     parts = ps.split("|")
                 else:
-                    warnings.warn(
-                        f"无法解析交互对格式: '{ps}' (需要包含 ',' 或 '|')"
-                    )
+                    warnings.warn(f"无法解析交互对格式: '{ps}' (需要包含 ',' 或 '|')")
                     continue
 
                 if len(parts) >= 2:
@@ -129,7 +128,7 @@ def parse_interaction_pairs(
 
 
 def parse_interaction_triplets(
-    interaction_triplets: Union[str, Sequence[Union[str, Tuple[int, int, int]]]]
+    interaction_triplets: Union[str, Sequence[Union[str, Tuple[int, int, int]]]],
 ) -> List[Tuple[int, int, int]]:
     """解析三阶交互三元组
 
@@ -205,9 +204,7 @@ def parse_interaction_triplets(
                 elif "|" in ts:
                     parts = ts.split("|")
                 else:
-                    warnings.warn(
-                        f"无法解析三元组格式: '{ts}' (需要包含 ',' 或 '|')"
-                    )
+                    warnings.warn(f"无法解析三元组格式: '{ts}' (需要包含 ',' 或 '|')")
                     continue
 
                 if len(parts) >= 3:
@@ -224,16 +221,12 @@ def parse_interaction_triplets(
 
     # 用户友好提示
     if duplicate_count > 0:
-        warnings.warn(
-            f"三元组输入包含 {duplicate_count} 个重复项，已自动去重"
-        )
+        warnings.warn(f"三元组输入包含 {duplicate_count} 个重复项，已自动去重")
 
     return parsed
 
 
-def parse_variable_types(
-    variable_types_list: Union[List[str], str]
-) -> Dict[int, str]:
+def parse_variable_types(variable_types_list: Union[List[str], str]) -> Dict[int, str]:
     """解析变量类型配置
 
     支持格式：
@@ -279,16 +272,75 @@ def parse_variable_types(
             vt_map[i] = "categorical"
         elif t_l.startswith("int"):
             vt_map[i] = "integer"
-        elif t_l.startswith("cont") or t_l.startswith("float") or t_l.startswith("real"):
+        elif (
+            t_l.startswith("cont") or t_l.startswith("float") or t_l.startswith("real")
+        ):
             vt_map.setdefault(i, "continuous")
 
     return vt_map
 
 
+def parse_ard_weights(
+    ard_weights: Union[str, Sequence[float], None],
+) -> Optional[np.ndarray]:
+    """解析ARD权重配置
+
+    支持格式:
+    - "0.1, 0.2, 0.3"           # 逗号分隔字符串
+    - [0.1, 0.2, 0.3]           # 列表
+    - "[0.1, 0.2, 0.3]"         # 带括号字符串
+    - None                      # 不使用权重
+
+    权重会自动归一化使得 sum(weights) = 1.0
+
+    Args:
+        ard_weights: ARD权重配置
+
+    Returns:
+        归一化后的权重数组，或None（不使用权重）
+    """
+    if ard_weights is None:
+        return None
+
+    # 字符串解析
+    if isinstance(ard_weights, str):
+        s = ard_weights.strip().strip("[]()")
+        if not s:
+            return None
+        try:
+            parts = [float(p.strip()) for p in s.split(",") if p.strip()]
+        except ValueError as e:
+            warnings.warn(f"无法解析ARD权重: '{ard_weights}' (错误: {e})")
+            return None
+    else:
+        # 序列类型
+        try:
+            parts = [float(x) for x in ard_weights]
+        except (TypeError, ValueError) as e:
+            warnings.warn(f"无法解析ARD权重: {ard_weights} (错误: {e})")
+            return None
+
+    if len(parts) == 0:
+        return None
+
+    weights = np.array(parts, dtype=np.float64)
+
+    # 验证: 全部非负
+    if np.any(weights < 0):
+        warnings.warn(f"ARD权重包含负值，已取绝对值: {weights}")
+        weights = np.abs(weights)
+
+    # 归一化
+    total = weights.sum()
+    if total < 1e-10:
+        warnings.warn("ARD权重总和接近零，返回等权重")
+        return np.ones(len(weights)) / len(weights)
+
+    return weights / total
+
+
 def validate_interaction_indices(
-    pairs: List[Tuple[int, int]],
-    triplets: List[Tuple[int, int, int]],
-    n_dims: int
+    pairs: List[Tuple[int, int]], triplets: List[Tuple[int, int, int]], n_dims: int
 ) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int, int]]]:
     """验证交互索引范围并过滤越界项
 
@@ -310,16 +362,14 @@ def validate_interaction_indices(
 
     # 过滤三阶
     invalid_triplets = [
-        (i, j, k) for i, j, k in triplets
-        if i >= n_dims or j >= n_dims or k >= n_dims
+        (i, j, k) for i, j, k in triplets if i >= n_dims or j >= n_dims or k >= n_dims
     ]
     if invalid_triplets:
         warnings.warn(
             f"三元组包含越界索引（维度={n_dims}）：{invalid_triplets}，已自动过滤。"
         )
     valid_triplets = [
-        (i, j, k) for i, j, k in triplets
-        if i < n_dims and j < n_dims and k < n_dims
+        (i, j, k) for i, j, k in triplets if i < n_dims and j < n_dims and k < n_dims
     ]
 
     return valid_pairs, valid_triplets
