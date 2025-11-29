@@ -14,13 +14,12 @@ def gower_distance(
     x2: np.ndarray,
     variable_types: Optional[Dict[int, str]] = None,
     ranges: Optional[Dict[int, float]] = None,
-    weights: Optional[np.ndarray] = None,
 ) -> float:
     """
     Calculate Gower distance between two data points.
 
     The Gower distance is defined as:
-    d(x1, x2) = Σ_j w_j * δ_j(x1_j, x2_j) / Σ_j w_j
+    d(x1, x2) = (1/p) * Σ_j δ_j(x1_j, x2_j)
 
     where δ_j is the dissimilarity for feature j:
     - For continuous: |x1_j - x2_j| / range_j
@@ -38,8 +37,6 @@ def gower_distance(
     ranges : Dict[int, float], optional
         Dictionary mapping continuous feature index to its range.
         If None, ranges are computed from the data.
-    weights : np.ndarray, optional
-        ARD weights for each dimension. If None, equal weights are used.
 
     Returns
     -------
@@ -80,16 +77,11 @@ def gower_distance(
     if ranges is None:
         ranges = {}
 
-    # Default: equal weights
-    if weights is not None and len(weights) != p:
-        weights = None  # Ignore mismatched weights
-
     total_distance = 0.0
-    total_weight = 0.0
+    valid_features = 0
 
     for j in range(p):
         var_type = variable_types.get(j, "continuous")
-        w_j = weights[j] if weights is not None else 1.0
 
         if var_type == "continuous":
             # Handle missing values
@@ -104,8 +96,8 @@ def gower_distance(
                 range_j = 1.0
 
             distance_j = abs(x1[j] - x2[j]) / range_j
-            total_distance += w_j * distance_j
-            total_weight += w_j
+            total_distance += distance_j
+            valid_features += 1
 
         elif var_type == "categorical":
             # Categorical: 0 if equal, 1 if different
@@ -113,15 +105,15 @@ def gower_distance(
                 distance_j = 0.0
             else:
                 distance_j = 1.0
-            total_distance += w_j * distance_j
-            total_weight += w_j
+            total_distance += distance_j
+            valid_features += 1
         else:
             raise ValueError(f"Unknown variable type: {var_type}")
 
-    if total_weight < 1e-10:
+    if valid_features == 0:
         return 0.0
 
-    return total_distance / total_weight
+    return total_distance / valid_features
 
 
 def gower_distance_matrix(
@@ -198,7 +190,6 @@ def compute_coverage(
     variable_types: Optional[Dict[int, str]] = None,
     ranges: Optional[Dict[int, float]] = None,
     method: str = "min_distance",
-    weights: Optional[np.ndarray] = None,
 ) -> float:
     """
     Compute spatial coverage score for a candidate point.
@@ -221,13 +212,18 @@ def compute_coverage(
         - 'min_distance': Minimum distance to existing samples
         - 'mean_distance': Mean distance to existing samples
         - 'median_distance': Median distance to existing samples
-    weights : np.ndarray, optional
-        ARD weights for each dimension. If None, equal weights are used.
 
     Returns
     -------
     float
         Coverage score (higher is better)
+
+    Examples
+    --------
+    >>> x = np.array([0.9, 0.9])
+    >>> X_sampled = np.array([[0.1, 0.1], [0.2, 0.2]])
+    >>> compute_coverage(x, X_sampled)
+    0.8
     """
     if X_sampled.shape[0] == 0:
         # No samples yet, maximum coverage
@@ -236,7 +232,7 @@ def compute_coverage(
     # Compute distances from x to all sampled points
     distances = np.array(
         [
-            gower_distance(x, X_sampled[i], variable_types, ranges, weights)
+            gower_distance(x, X_sampled[i], variable_types, ranges)
             for i in range(X_sampled.shape[0])
         ]
     )
@@ -259,7 +255,6 @@ def compute_coverage_batch(
     variable_types: Optional[Dict[int, str]] = None,
     ranges: Optional[Dict[int, float]] = None,
     method: str = "min_distance",
-    weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Compute spatial coverage scores for a batch of candidate points.
@@ -276,19 +271,22 @@ def compute_coverage_batch(
         Dictionary mapping continuous feature index to its range.
     method : str, default='min_distance'
         Method to compute coverage.
-    weights : np.ndarray, optional
-        ARD weights for each dimension. If None, equal weights are used.
 
     Returns
     -------
     np.ndarray
         Coverage scores for all candidates (n_candidates,)
+
+    Examples
+    --------
+    >>> X_candidates = np.array([[0.8, 0.8], [0.9, 0.9]])
+    >>> X_sampled = np.array([[0.1, 0.1], [0.2, 0.2]])
+    >>> compute_coverage_batch(X_candidates, X_sampled)
+    array([0.7, 0.8])
     """
     return np.array(
         [
-            compute_coverage(
-                X_candidates[i], X_sampled, variable_types, ranges, method, weights
-            )
+            compute_coverage(X_candidates[i], X_sampled, variable_types, ranges, method)
             for i in range(X_candidates.shape[0])
         ]
     )

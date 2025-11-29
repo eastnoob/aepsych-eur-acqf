@@ -68,7 +68,6 @@ try:
         parse_interaction_pairs,
         parse_interaction_triplets,
         parse_variable_types,
-        parse_ard_weights,
         validate_interaction_indices,
         DiagnosticsManager,
     )
@@ -84,7 +83,6 @@ except ImportError:
         parse_interaction_pairs,
         parse_interaction_triplets,
         parse_variable_types,
-        parse_ard_weights,
         validate_interaction_indices,
         DiagnosticsManager,
     )
@@ -153,8 +151,6 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # ========== 变量类型 ==========
         variable_types: Optional[Dict[int, str]] = None,
         variable_types_list: Optional[Union[List[str], str]] = None,
-        # ========== ARD权重（覆盖度加权）==========
-        ard_weights: Optional[Union[str, Sequence[float]]] = None,  # Gower距离维度权重
         # ========== 局部扰动 ==========
         local_jitter_frac: float = 0.1,
         local_num: int = 4,
@@ -187,9 +183,6 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             variable_types = parse_variable_types(variable_types_list)
 
         self.variable_types = variable_types
-
-        # ========== 解析ARD权重 ==========
-        self.ard_weights = parse_ard_weights(ard_weights)
 
         # ========== 解析交互配置 ==========
         self.enable_main = enable_main
@@ -262,30 +255,20 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # 2. 动态权重引擎
         # Get bounds from model or infer from training data dimensions
         bounds = None
-        if hasattr(model, "bounds"):
+        if hasattr(model, 'bounds'):
             bounds = model.bounds
-        elif hasattr(model, "_bounds"):
+        elif hasattr(model, '_bounds'):
             bounds = model._bounds
-        elif hasattr(model, "train_inputs") and model.train_inputs:
+        elif hasattr(model, 'train_inputs') and model.train_inputs:
             # Infer bounds from training data dimensions
             # This is the default fallback when model doesn't have explicit bounds
             X_train = model.train_inputs[0]
             if X_train.ndim >= 2:
-                # # 计算每维的最小最大值，并添加10%的边距
-                # min_vals = X_train.min(dim=0)[0]
-                # max_vals = X_train.max(dim=0)[0]
-                # range_vals = max_vals - min_vals
-                # margin = 0.1 * range_vals
-                # lower_bounds = min_vals - margin
-                # upper_bounds = max_vals + margin
-                # bounds = torch.stack([lower_bounds, upper_bounds])
-
                 num_dims = X_train.shape[-1]
                 # Use [0, 1] per dimension as default
                 # This works for normalized/standardized data
-                bounds = torch.tensor(
-                    [[0.0] * num_dims, [1.0] * num_dims], dtype=torch.float32
-                )
+                bounds = torch.tensor([[0.0] * num_dims, [1.0] * num_dims], dtype=torch.float32)
+
         self.weight_engine = DynamicWeightEngine(
             model=model,
             bounds=bounds,
@@ -327,9 +310,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
         # 4. 覆盖度计算
         self.coverage_helper = CoverageHelper(
-            variable_types=variable_types,
-            coverage_method=coverage_method,
-            ard_weights=self.ard_weights,
+            variable_types=variable_types, coverage_method=coverage_method
         )
 
         # 5. ANOVA效应引擎（延迟初始化，因为需要知道维度数）
@@ -368,7 +349,6 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
     def _ensure_fresh_data(self) -> None:
         """同步训练数据并更新所有模块"""
         import sys
-
         if not hasattr(self.model, "train_inputs") or self.model.train_inputs is None:
             print(f"[EUR _ensure_fresh_data] No train_inputs on model", file=sys.stderr)
             return
@@ -381,10 +361,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             return
 
         n = X_t.shape[0]
-        print(
-            f"[EUR _ensure_fresh_data] model_id={id(self.model)}, train_inputs.shape={X_t.shape}, n={n}, _last_hist_n={self._last_hist_n}, _fitted={self._fitted}",
-            file=sys.stderr,
-        )
+        print(f"[EUR _ensure_fresh_data] model_id={id(self.model)}, train_inputs.shape={X_t.shape}, n={n}, _last_hist_n={self._last_hist_n}, _fitted={self._fitted}", file=sys.stderr)
 
         # 首次初始化或数据更新
         if (not self._fitted) or (n != self._last_hist_n):
@@ -398,15 +375,9 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             # 更新各模块
             self.local_sampler.update_data(self._X_train_np)
             self.coverage_helper.update_training_data(self._X_train_np)
-            print(
-                f"[EUR _ensure_fresh_data] Updating weight_engine with n={n}",
-                file=sys.stderr,
-            )
+            print(f"[EUR _ensure_fresh_data] Updating weight_engine with n={n}", file=sys.stderr)
             self.weight_engine.update_training_status(n, self._fitted)
-            print(
-                f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}",
-                file=sys.stderr,
-            )
+            print(f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}", file=sys.stderr)
 
             # 验证交互索引并过滤越界项
             self._pairs, self._triplets = validate_interaction_indices(
@@ -493,7 +464,6 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             (B,) 采集值（越大越好）
         """
         import sys
-
         print(f"[EUR forward] Called with X.shape={X.shape}", file=sys.stderr)
         self._ensure_fresh_data()
 
@@ -663,7 +633,6 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 # Register with AEPsych Config system
 try:
     from aepsych.config import Config
-
     Config.register_object(EURAnovaMultiAcqf)
 except ImportError:
     pass  # Config system may not be available in all contexts

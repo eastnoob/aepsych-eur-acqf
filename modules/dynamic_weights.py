@@ -23,6 +23,7 @@ from typing import Optional
 import numpy as np
 import torch
 from botorch.models.model import Model
+from loguru import logger
 
 
 EPS = 1e-8
@@ -124,7 +125,9 @@ class SPS_Tracker:
 
             # Compute relative change
             diff = current_predictions - self.prev_predictions
-            delta_t = torch.norm(diff).item() / (torch.norm(current_predictions).item() + EPS)
+            delta_t = torch.norm(diff).item() / (
+                torch.norm(current_predictions).item() + EPS
+            )
 
             # Apply sensitivity scaling and tanh normalization
             r_t_raw = torch.tanh(torch.tensor(self.sensitivity * delta_t)).item()
@@ -133,7 +136,9 @@ class SPS_Tracker:
             if self.r_t_smoothed is None:
                 r_t = r_t_raw
             else:
-                r_t = self.ema_alpha * self.r_t_smoothed + (1 - self.ema_alpha) * r_t_raw
+                r_t = (
+                    self.ema_alpha * self.r_t_smoothed + (1 - self.ema_alpha) * r_t_raw
+                )
 
             # Update state
             self.prev_predictions = current_predictions.clone()
@@ -142,8 +147,7 @@ class SPS_Tracker:
             return float(r_t)
 
         except Exception as e:
-            import sys
-            print(f"[SPS_Tracker] Error computing r_t: {e}, returning 1.0", file=sys.stderr)
+            logger.error(f"[SPS_Tracker] Error computing r_t: {e}, returning 1.0")
             return 1.0
 
 
@@ -242,21 +246,42 @@ class DynamicWeightEngine:
         self.tau_safe = tau_safe
         self.gamma_penalty_beta = gamma_penalty_beta
 
-        # 初始化SPS_Tracker（如果启用且有bounds）
+        # 初始化SPS_Tracker（如果启用）
         self.sps_tracker: Optional[SPS_Tracker] = None
-        if self.use_sps and bounds is not None:
-            self.sps_tracker = SPS_Tracker(
-                bounds=bounds,
-                sensitivity=sps_sensitivity,
-                ema_alpha=sps_ema_alpha,
-            )
-        elif self.use_sps and bounds is None:
-            import warnings
-            warnings.warn(
-                "use_sps=True but bounds=None, SPS will not be available. "
-                "Falling back to parameter change rate method.",
-                UserWarning
-            )
+        if self.use_sps:
+            # # 如果bounds为None，尝试从模型推断
+            # if bounds is None:
+            #     bounds = self._infer_bounds_from_model(model)
+
+            # if bounds is not None:
+            #     self.sps_tracker = SPS_Tracker(
+            #         bounds=bounds,
+            #         sensitivity=sps_sensitivity,
+            #         ema_alpha=sps_ema_alpha,
+            #     )
+            # else:
+            #     import warnings
+
+            #     warnings.warn(
+            #         "use_sps=True but bounds=None and could not infer from model, SPS will not be available. "
+            #         "Falling back to parameter change rate method.",
+            #         UserWarning,
+            #     )
+
+            if self.use_sps and bounds is not None:
+                self.sps_tracker = SPS_Tracker(
+                    bounds=bounds,
+                    sensitivity=sps_sensitivity,
+                    ema_alpha=sps_ema_alpha,
+                )
+            elif self.use_sps and bounds is None:
+                import warnings
+
+                warnings.warn(
+                    "use_sps=True but bounds=None, SPS will not be available. "
+                    "Falling back to parameter change rate method.",
+                    UserWarning,
+                )
 
         # 状态缓存
         self._initial_param_vars: Optional[torch.Tensor] = None
@@ -292,6 +317,39 @@ class DynamicWeightEngine:
                 f"got tau_n_max={tau_n_max}, tau_n_min={tau_n_min}"
             )
 
+    def _infer_bounds_from_model(self, model: Model) -> Optional[torch.Tensor]:
+        """尝试从模型推断边界"""
+        try:
+            # 尝试从模型获取边界
+            if hasattr(model, "bounds") and model.bounds is not None:
+                return model.bounds
+            elif hasattr(model, "_bounds") and model._bounds is not None:
+                return model._bounds
+            elif hasattr(model, "train_inputs") and model.train_inputs:
+                # 从训练数据推断边界
+                X_train = model.train_inputs[0]
+                if X_train.ndim >= 2:
+                    # 计算每维的最小最大值，并添加10%的边距
+                    min_vals = X_train.min(dim=0)[0]
+                    max_vals = X_train.max(dim=0)[0]
+                    range_vals = max_vals - min_vals
+                    margin = 0.1 * range_vals
+                    lower_bounds = min_vals - margin
+                    upper_bounds = max_vals + margin
+                    return torch.stack([lower_bounds, upper_bounds])
+            else:
+                # 默认边界 [0, 1]^d
+                if hasattr(model, "train_inputs") and model.train_inputs:
+                    dim = model.train_inputs[0].shape[-1]
+                else:
+                    dim = 6  # 默认6维
+                return torch.tensor([[0.0] * dim, [1.0] * dim], dtype=torch.float32)
+        except Exception as e:
+            import warnings
+
+            warnings.warn(f"Failed to infer bounds from model: {e}")
+            return None
+
     def update_training_status(self, n_train: int, fitted: bool) -> None:
         """更新训练状态（由主类调用）
 
@@ -299,18 +357,22 @@ class DynamicWeightEngine:
             n_train: 当前训练样本数
             fitted: 模型是否已拟合
         """
-        import sys
-        print(f"\n[update_training_status] 被调用！旧n_train={self._n_train}, 新n_train={n_train}, fitted={fitted}", file=sys.stderr)
+        logger.debug(
+            f"[WeightEngine] update_training_status called: old_n={self._n_train}, new_n={n_train}, fitted={fitted}"
+        )
 
         # 如果训练样本数增加，标记参数历史需要更新
         if n_train > self._n_train:
             self._params_need_update = True
-            print(f"[update_training_status] 设置 _params_need_update=True", file=sys.stderr)
+            logger.debug(
+                f"[WeightEngine] n_train increased: {self._n_train} -> {n_train}, _params_need_update=True"
+            )
 
         self._n_train = n_train
         self._fitted = fitted
-        print(f"[update_training_status] 更新后：_n_train={self._n_train}, _fitted={self._fitted}", file=sys.stderr)
-
+        logger.debug(
+            f"[WeightEngine] Updated state: _n_train={self._n_train}, _fitted={self._fitted}"
+        )
 
     def compute_relative_main_variance(self) -> float:
         """计算相对参数方差比 r_t（使用参数变化率）
@@ -335,8 +397,9 @@ class DynamicWeightEngine:
             return self._compute_param_change_rate(self.model)
         except Exception as e:
             # 回退到预测方差方法
-            import sys
-            print(f"[r_t n={self._n_train}] 参数变化率计算失败: {e}, 使用回退方法", file=sys.stderr)
+            logger.warning(
+                f"[r_t n={self._n_train}] Param change rate failed: {e}, using fallback"
+            )
             return self._compute_prediction_variance_fallback(self.model)
 
     def _compute_param_change_rate(self, model) -> float:
@@ -362,18 +425,14 @@ class DynamicWeightEngine:
             # 缓存结果
             self._cached_r_t = r_t
             self._cached_r_t_n_train = self._n_train
-            import sys
-            print(f"[r_t n={self._n_train}] 首次迭代，r_t={r_t:.6f}", file=sys.stderr)
+            logger.debug(f"[r_t n={self._n_train}] First iteration, r_t={r_t:.6f}")
             return r_t
 
         # 检查参数数量变化（模型结构改变）
         if len(current_params) != len(self._prev_core_params):
-            import sys
-            print(
-                f"[r_t n={self._n_train}] ⚠️ 核心参数数量变化: "
-                f"{len(self._prev_core_params)} -> {len(current_params)}, "
-                "重置基线",
-                file=sys.stderr,
+            logger.warning(
+                f"[r_t n={self._n_train}] Core param count changed: "
+                f"{len(self._prev_core_params)} -> {len(current_params)}, resetting baseline"
             )
             self._prev_core_params = current_params.clone()
             self._initial_param_norm = torch.norm(current_params).item()
@@ -397,13 +456,22 @@ class DynamicWeightEngine:
             self._prev_core_params = current_params.clone()
             self._params_need_update = False  # 清除标志
 
-            # Debug 输出（只在真正更新时打印）
-            import sys
-            print(
-                f"[r_t n={self._n_train}] 参数已更新: 变化率={change_rate:.6f}, "
-                f"差异范数={diff_norm:.6e}, 当前范数={current_norm:.6e}",
-                file=sys.stderr,
-            )
+        # # 【关键修复】强制更新参数历史（每次调用都更新）
+        # # 这确保即使 _params_need_update 没有正确设置，也能跟踪参数变化
+        # self._prev_core_params = current_params.clone()
+        # self._params_need_update = False  # 清除标志
+
+        # Debug 输出（只在真正更新时打印）
+        logger.debug(
+            f"[r_t n={self._n_train}] Params updated: change_rate={change_rate:.6f}, "
+            f"diff_norm={diff_norm:.6e}, current_norm={current_norm:.6e}"
+        )
+
+        # Debug 输出（每次都打印）
+        logger.debug(
+            f"[r_t n={self._n_train}] Params updated: change_rate={change_rate:.6f}, "
+            f"diff_norm={diff_norm:.6e}, current_norm={current_norm:.6e}"
+        )
 
         # [方案A修复1] 去掉×2放大系数,降低r_t虚高
         # 原scale=2.0导致r_t均值0.68,过高→lambda_t过低
@@ -448,17 +516,24 @@ class DynamicWeightEngine:
                 continue
 
             # 跳过结构参数（关键！）
-            skip_keywords = ['cutpoint', 'outcome_transform', 'standardize', 'variational']
+            skip_keywords = [
+                "cutpoint",
+                "outcome_transform",
+                "standardize",
+                "variational",
+            ]
             if any(kw in name.lower() for kw in skip_keywords):
                 continue
 
             # 保留核心参数
-            keep_keywords = ['mean_module', 'covar_module']
+            keep_keywords = ["mean_module", "covar_module"]
             if any(kw in name.lower() for kw in keep_keywords):
                 params_to_track.append(param.detach().flatten())
 
         if not params_to_track:
-            raise RuntimeError("无法提取核心参数！检查模型是否有 mean_module/covar_module")
+            raise RuntimeError(
+                "无法提取核心参数！检查模型是否有 mean_module/covar_module"
+            )
 
         return torch.cat(params_to_track)
 
@@ -479,7 +554,10 @@ class DynamicWeightEngine:
                 actual_model = model.model
 
             # 获取输入维度
-            if hasattr(actual_model, "train_inputs") and actual_model.train_inputs is not None:
+            if (
+                hasattr(actual_model, "train_inputs")
+                and actual_model.train_inputs is not None
+            ):
                 dim = actual_model.train_inputs[0].shape[-1]
             else:
                 # 回退：假设6维
@@ -496,28 +574,28 @@ class DynamicWeightEngine:
             avg_var = var.mean().item()
 
             # 跟踪初始方差
-            if not hasattr(self, '_initial_pred_var'):
+            if not hasattr(self, "_initial_pred_var"):
                 self._initial_pred_var = avg_var
-                import sys
-                print(f"[r_t fallback n={self._n_train}] 初始预测方差={avg_var:.6e}", file=sys.stderr)
+                logger.debug(
+                    f"[r_t fallback n={self._n_train}] Initial pred var={avg_var:.6e}"
+                )
                 return 1.0
 
             # 更高的方差 → 更高的 r_t
             r_t = avg_var / max(self._initial_pred_var, 1e-8)
             r_t = min(1.0, r_t)
 
-            import sys
-            print(
-                f"[r_t fallback n={self._n_train}] 平均方差={avg_var:.6e}, "
-                f"初始方差={self._initial_pred_var:.6e}, r_t={r_t:.6f}",
-                file=sys.stderr,
+            logger.debug(
+                f"[r_t fallback n={self._n_train}] avg_var={avg_var:.6e}, "
+                f"init_var={self._initial_pred_var:.6e}, r_t={r_t:.6f}"
             )
 
             return r_t
 
         except Exception as e:
-            import sys
-            print(f"[r_t fallback n={self._n_train}] 回退方法失败: {e}, 返回1.0", file=sys.stderr)
+            logger.error(
+                f"[r_t fallback n={self._n_train}] Fallback failed: {e}, returning 1.0"
+            )
             return 1.0
 
     def compute_lambda(self) -> float:
@@ -566,9 +644,11 @@ class DynamicWeightEngine:
                 # Phase 2: 线性增长
                 phase2_span = self.piecewise_phase2_end - self.piecewise_phase1_end
                 progress = (n - self.piecewise_phase1_end) / phase2_span
-                lambda_t = self.piecewise_lambda_low + (
-                    self.piecewise_lambda_high - self.piecewise_lambda_low
-                ) * progress
+                lambda_t = (
+                    self.piecewise_lambda_low
+                    + (self.piecewise_lambda_high - self.piecewise_lambda_low)
+                    * progress
+                )
 
             # 边界保护
             lambda_t = np.clip(lambda_t, self.lambda_min, self.lambda_max)
@@ -633,7 +713,11 @@ class DynamicWeightEngine:
             # 2. 安全刹车：高不确定性时强制覆盖
             # 获取r_t（与lambda_t使用同一来源）
             if self.use_sps and self.sps_tracker is not None:
-                r_t = self.sps_tracker.r_t_smoothed if self.sps_tracker.r_t_smoothed is not None else 1.0
+                r_t = (
+                    self.sps_tracker.r_t_smoothed
+                    if self.sps_tracker.r_t_smoothed is not None
+                    else 1.0
+                )
             else:
                 r_t = self.compute_relative_main_variance()
 
