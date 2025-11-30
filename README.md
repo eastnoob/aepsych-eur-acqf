@@ -238,6 +238,15 @@ variable_types_list = categorical, integer, continuous, categorical, continuous,
 - `extensions/dynamic_eur_acquisition/acquisition_function_anova_v2.py` (v2)
 - 本 README：`extensions/dynamic_eur_acquisition/README.md`
 
+---
+
+## Contributors
+
+We keep a small CONTRIBUTORS file in this directory. If you want to report an issue
+or contribute, please check `CONTRIBUTORS.md` for contact / contributor information.
+
+*Maintainers & authors*: see `CONTRIBUTORS.md`.
+
 # Dynamic EUR Acquisition Function (V4)# Dynamic EUR Acquisition Function
 
 一个用于AEPsych框架的自适应采集函数，专门用于分类变量和混合类型变量的贝叶斯优化。一个用于分类变量主动学习的动态采集函数实现，专注于最大化主效应和交互效应估计精度。
