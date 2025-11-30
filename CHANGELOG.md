@@ -187,7 +187,7 @@ if not is_valid:
 
 ## Contributors
 
-- eastnoob Code (2025-11-26): 混合扰动策略实现、序数模型验证工具
+- eastnoob (2025-11-26): 混合扰动策略实现、序数模型验证工具
 - AEPsych Team: 核心框架和原始EUR实现
 
 ---
