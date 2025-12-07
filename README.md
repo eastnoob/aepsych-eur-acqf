@@ -13,12 +13,14 @@
 针对**2-3水平离散变量**场景的优化策略，通过穷举所有离散水平（而非随机采样）提升效应发现质量：
 
 **问题背景**：
+
 - 原始策略：对分类/整数变量使用高斯扰动后舍入
 - 问题：2-3水平变量的随机采样易遗漏或偏向某些水平
   - 例如：3水平变量，`local_num=4`，可能采样到 `[0,1,1,2]` → 水平0覆盖不足
   - 导致主效应Δ_i估计不准确，影响采集函数排序质量
 
 **混合扰动策略**：
+
 - **穷举模式**（≤3水平）：完全枚举所有离散值，循环填充到`local_num`
   - 例如：3水平 + `local_num=6` → `[0,1,2,0,1,2]` (每个水平2次，完全均衡)
 - **高斯模式**（>3水平）：保持原有随机扰动（避免穷举组合爆炸）
@@ -102,6 +104,7 @@ python tests/test_hybrid_perturbation_comparison.py
 ```
 
 预期结果：
+
 - 效应发现能力提升10-20%（R²提高）
 - 参数估计质量改善（RMSE降低）
 - 选点多样性增加（完全覆盖所有水平）
@@ -109,10 +112,12 @@ python tests/test_hybrid_perturbation_comparison.py
 #### 技术细节
 
 实现位置：
+
 - `modules/local_sampler.py`: LocalSampler类（独立扰动器）
 - `eur_anova_pair.py`: EURAnovaPairAcqf._make_local_hybrid()方法
 
 关键方法：
+
 - `_perturb_categorical()`: 分类变量穷举
 - `_perturb_integer()`: 整数变量穷举
 - `_perturb_continuous()`: 连续变量高斯扰动（不变）
