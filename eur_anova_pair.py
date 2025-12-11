@@ -465,6 +465,11 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             mod = importlib.import_module("aepsych.transforms.ops")
             Categorical = getattr(mod, "Categorical")
             Round = getattr(mod, "Round")
+            # 【新增】导入 Ordinal 类型
+            try:
+                Ordinal = getattr(mod, "Ordinal")
+            except AttributeError:
+                Ordinal = None
 
             for sub in tf.values():
                 if hasattr(sub, "indices") and isinstance(sub.indices, list):
@@ -473,6 +478,22 @@ class EURAnovaPairAcqf(AcquisitionFunction):
                             vt[idx] = "categorical"
                         elif isinstance(sub, Round):
                             vt.setdefault(idx, "integer")
+                        else:
+                            # Ordinal 类型推断：覆盖 aepsych core Ordinal，
+                            # 并兼容扩展/自定义实现（CustomOrdinal）
+                            is_ordinal = False
+                            # 优先检测 core Ordinal 类型
+                            if Ordinal is not None and isinstance(sub, Ordinal):
+                                is_ordinal = True
+                            # 检测常见扩展属性（如 CustomOrdinal 实现）
+                            elif hasattr(sub, "normalized_values") or hasattr(sub, "physical_to_normalized"):
+                                is_ordinal = True
+                            # 兜底：类名中带 'ordinal'（不区分大小写）
+                            elif hasattr(sub, "__class__") and "ordinal" in sub.__class__.__name__.lower():
+                                is_ordinal = True
+
+                            if is_ordinal:
+                                vt.setdefault(idx, "ordinal")
         except Exception:
             pass
         if len(vt) > 0:

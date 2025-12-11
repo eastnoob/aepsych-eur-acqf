@@ -3,7 +3,8 @@
 
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add parent directory (extensions/dynamic_eur_acquisition) to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 print("Testing imports...")
 

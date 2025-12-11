@@ -54,8 +54,8 @@ def test_enabled_info_output():
 
     records = _collect_logs(run)
 
-    # Should contain an INFO summary line with n_train and λ
-    assert any(re.search(r"\[EUR\] n_train=10 .*λ₂=0\.5", r) for r in records)
+    # Should contain an INFO summary line with n_train and lambda_2
+    assert any(re.search(r"\[EUR\] n_train=10 .*lambda_2=0\.5", r) for r in records)
 
 
 def test_verbose_writes_file(tmp_path):

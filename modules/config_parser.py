@@ -235,6 +235,9 @@ def parse_variable_types(variable_types_list: Union[List[str], str]) -> Dict[int
     - "(cat; cont; int)"                       # 括号+分号
 
     识别规则：
+    - 包含 'custom_ordinal_mono' → 'custom_ordinal_mono' (非等差有序)
+    - 包含 'custom_ordinal' → 'custom_ordinal' (等差有序)
+    - 以 'ord' 开头 → 'ordinal' (基础有序)
     - 以 'cat' 开头 → 'categorical'
     - 以 'int' 开头 → 'integer'
     - 以 'cont', 'float', 'real' 开头 → 'continuous'
@@ -250,6 +253,8 @@ def parse_variable_types(variable_types_list: Union[List[str], str]) -> Dict[int
         {0: 'categorical', 1: 'continuous', 2: 'integer'}
         >>> parse_variable_types(["cat", "cont", "int"])
         {0: 'categorical', 1: 'continuous', 2: 'integer'}
+        >>> parse_variable_types(["custom_ordinal", "continuous"])
+        {0: 'custom_ordinal', 1: 'continuous'}
     """
     raw = variable_types_list
 
@@ -268,7 +273,15 @@ def parse_variable_types(variable_types_list: Union[List[str], str]) -> Dict[int
     vt_map: Dict[int, str] = {}
     for i, t in enumerate(tokens):
         t_l = t.lower()
-        if t_l.startswith("cat"):
+        # Ordinal types (most specific first)
+        if "custom_ordinal_mono" in t_l:
+            vt_map[i] = "custom_ordinal_mono"
+        elif "custom_ordinal" in t_l:
+            vt_map[i] = "custom_ordinal"
+        elif t_l.startswith("ord"):
+            vt_map[i] = "ordinal"
+        # Other types
+        elif t_l.startswith("cat"):
             vt_map[i] = "categorical"
         elif t_l.startswith("int"):
             vt_map[i] = "integer"

@@ -117,7 +117,7 @@ class LocalSampler:
             self._auto_compute_local_num()
 
     def _precompute_categorical_values(self) -> None:
-        """预计算每个分类维的unique值"""
+        """预计算每个分类/有序维的unique值"""
         if self._X_train_np is None or self.variable_types is None:
             return
 
@@ -126,7 +126,8 @@ class LocalSampler:
 
         for dim_idx, vtype in self.variable_types.items():
             try:
-                if vtype == "categorical":
+                # 处理分类和有序类型
+                if vtype in ("categorical", "ordinal", "custom_ordinal", "custom_ordinal_mono"):
                     # 边界检查
                     if not (0 <= dim_idx < n_dims):
                         failed_dims.append(
@@ -149,7 +150,7 @@ class LocalSampler:
         # 仅在有失败时警告
         if failed_dims:
             warnings.warn(
-                f"预计算分类值失败的维度: {failed_dims}，"
+                f"预计算分类/有序值失败的维度: {failed_dims}，"
                 f"这些维度将保持原值（无局部探索）"
             )
 
@@ -200,7 +201,7 @@ class LocalSampler:
         low_level_counts = []
 
         for dim_idx, vtype in self.variable_types.items():
-            if vtype in ("categorical", "integer"):
+            if vtype in ("categorical", "ordinal", "custom_ordinal", "custom_ordinal_mono", "integer"):
                 # 获取该维度的水平数
                 if dim_idx in self._unique_vals_dict:
                     n_levels = len(self._unique_vals_dict[dim_idx])
@@ -285,6 +286,9 @@ class LocalSampler:
 
             if vt == "categorical":
                 base = self._perturb_categorical(base, k, B)
+
+            elif vt in ["ordinal", "custom_ordinal", "custom_ordinal_mono"]:
+                base = self._perturb_ordinal(base, k, B)
 
             elif vt == "integer":
                 base = self._perturb_integer(base, k, B, mn[k], mx[k], span[k])
@@ -387,4 +391,70 @@ class LocalSampler:
         sigma = self.local_jitter_frac * span
         noise = torch.randn(B, self.local_num, device=base.device) * sigma
         base[:, :, k] = torch.clamp(base[:, :, k] + noise, min=mn, max=mx)
+        return base
+
+    def _perturb_ordinal(self, base: torch.Tensor, k: int, B: int) -> torch.Tensor:
+        """有序参数扰动：在规范化值空间扰动 + 最近邻约束
+
+        关键设计：
+        - base[:,:,k] 包含规范化值（e.g., [0.0, 0.333, 1.0]）
+        - 在规范化值空间高斯扰动
+        - 最近邻约束到有效的规范化值
+        - 保留间距信息供GP和ANOVA使用
+
+        策略选择：
+        - 启用混合扰动 且 水平数 ≤ threshold → 穷举所有值
+        - 其他情况 → 高斯扰动 + 最近邻约束
+        """
+        # 获取该参数的有效规范化值列表
+        unique_normalized_vals = self._unique_vals_dict.get(k)
+
+        if unique_normalized_vals is None or len(unique_normalized_vals) == 0:
+            # 降级：保持原值
+            warnings.warn(
+                f"Ordinal维 {k} 的unique值未找到，保持原值（该维度无探索贡献）"
+            )
+            return base
+
+        unique_vals = np.array(unique_normalized_vals, dtype=np.float64)
+        n_levels = len(unique_vals)
+
+        # 【混合策略】判断是否使用穷举
+        if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
+            # ========== 穷举模式 ==========
+            if self.exhaustive_use_cyclic_fill:
+                # 循环填充到local_num
+                n_repeats = (self.local_num // n_levels) + 1
+                samples = np.tile(unique_vals, (B, n_repeats))
+                samples = samples[:, : self.local_num]
+            else:
+                # 只生成n_levels个样本
+                samples = np.tile(unique_vals, (B, 1))
+
+            base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
+                dtype=base.dtype, device=base.device
+            )
+        else:
+            # ========== 高斯扰动模式 ==========
+            # 规范化值空间的span总是1.0（因为已归一化到[0,1]）
+            span = 1.0
+            sigma = self.local_jitter_frac * span  # e.g., 0.1 * 1.0 = 0.1
+
+            # 在规范化值空间扰动
+            center_vals = base[:, :, k].cpu().numpy()  # (B, local_num)
+            noise = self._np_rng.normal(0, sigma, size=(B, self.local_num))
+            perturbed = center_vals + noise
+
+            # 约束到最近的有效规范化值
+            samples = np.zeros_like(perturbed)
+            for i in range(B):
+                for j in range(self.local_num):
+                    # 最近邻约束
+                    closest_idx = np.argmin(np.abs(unique_vals - perturbed[i, j]))
+                    samples[i, j] = unique_vals[closest_idx]
+
+            base[:, :, k] = torch.from_numpy(samples).to(
+                dtype=base.dtype, device=base.device
+            )
+
         return base
