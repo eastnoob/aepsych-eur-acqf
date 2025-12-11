@@ -9,6 +9,7 @@ EUR(x) = Info(x) \oplus \gamma_t \times Coverage(x)
 $$
 
 其中：
+
 - Info(x): 主效应 + λ_t × 交互效应
 - Coverage(x): 基于Gower距离的覆盖度量
 - λ_t, γ_t: 动态权重参数
@@ -16,11 +17,13 @@ $$
 ## 使用方法
 
 ### 安装
+
 ```bash
 pip install aepsych torch botorch gpytorch
 ```
 
 ### 基本使用
+
 ```python
 from extensions.dynamic_eur_acquisition import EURAnovaMultiAcqf
 from aepsych.server import AEPsychServer
@@ -45,11 +48,13 @@ for trial in range(25):
 ```
 
 ### 主要组件
+
 - `EURAnovaMultiAcqf`: 推荐版本，支持多阶交互
 - `anova_effects.py`: 效应计算
 - `dynamic_weights.py`: 权重调整
 - `local_sampler.py`: 混合变量采样
 
 ## 文档
+
 - [详细文档](docs/README_FULL_HISTORY.md)
 - [配置指南](docs/⭐AEPSYCH_CONFIG_GUIDE.md)
