@@ -9,6 +9,7 @@ import matplotlib
 matplotlib.use("Agg")  # 使用非 GUI 后端，避免 Qt 问题
 import matplotlib.pyplot as plt
 from typing import List, Tuple
+from loguru import logger
 
 
 # ============================================================================
@@ -117,7 +118,7 @@ def visualize_single_vs_multiscale():
 
     plt.tight_layout()
     plt.savefig("single_vs_multiscale.png", dpi=150, bbox_inches="tight")
-    print("✓ 保存：single_vs_multiscale.png")
+    logger.info("✓ 保存：single_vs_multiscale.png")
 
 
 # ============================================================================
@@ -165,7 +166,7 @@ def create_comparison_table():
        - 固定：基准（最简单，够用于简单场景）
     """
 
-    print(comparison)
+    logger.info(comparison)
     return comparison
 
 
@@ -225,7 +226,7 @@ def create_decision_matrix():
       → 位置：右上角 → 推荐：多尺度+学习型
     """
 
-    print(matrix)
+    logger.info(matrix)
     return matrix
 
 
@@ -246,17 +247,17 @@ def demonstrate_learning_progression():
         "Dimension 2 (Interaction)": [0.8, 0.65, 0.5, 0.35, 0.25, 0.15],
     }
 
-    print("\n" + "=" * 80)
-    print("学习型扰动的自适应演示")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("学习型扰动的自适应演示")
+    logger.info("=" * 80)
 
     for dim_name, lr_values in learning_rates.items():
-        print(f"\n{dim_name}")
-        print("-" * 80)
-        print(
+        logger.info(f"\n{dim_name}")
+        logger.info("-" * 80)
+        logger.info(
             f"{'Trial':<6} {'Learning Rate':<16} {'Fixed σ':<15} {'Learned σ':<15} {'Decision':<20}"
         )
-        print("-" * 80)
+        logger.info("-" * 80)
 
         for trial_idx, (trial, lr) in enumerate(zip(trials, lr_values)):
             fixed_sigma = 0.1  # 固定的
@@ -272,15 +273,15 @@ def demonstrate_learning_progression():
                 learned_sigma = 0.15  # 中等
                 decision = "Medium (均衡)"
 
-            print(
+            logger.info(
                 f"{trial:<6} {lr:<16.2f} {fixed_sigma:<15.3f} {learned_sigma:<15.3f} {decision:<20}"
             )
 
-    print("\n关键洞察：")
-    print("  • Dimension 0：快速收敛 → 扰动幅度 0.01-0.05（精调）")
-    print("  • Dimension 1：缓慢收敛 → 扰动幅度保持 0.2+（持续探索）")
-    print("  • Dimension 2：交互学习 → 中等幅度 0.15（平衡探索与精调）")
-    print("\n  vs 固定扰动始终 0.1，无法区分这些不同需求！")
+    logger.info("\n关键洞察：")
+    logger.info("  • Dimension 0：快速收敛 → 扰动幅度 0.01-0.05（精调）")
+    logger.info("  • Dimension 1：缓慢收敛 → 扰动幅度保持 0.2+（持续探索）")
+    logger.info("  • Dimension 2：交互学习 → 中等幅度 0.15（平衡探索与精调）")
+    logger.info("\n  vs 固定扰动始终 0.1，无法区分这些不同需求！")
 
 
 # ============================================================================
@@ -343,7 +344,7 @@ def performance_comparison_framework():
     ╚════════════════════════════════════════════════════════════════════════════╝
     """
 
-    print(framework)
+    logger.info(framework)
     return framework
 
 
@@ -352,38 +353,38 @@ def performance_comparison_framework():
 # ============================================================================
 
 if __name__ == "__main__":
-    print("\n" + "=" * 80)
-    print("多尺度 vs 学习型扰动：详细对比")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("多尺度 vs 学习型扰动：详细对比")
+    logger.info("=" * 80)
 
     # 1. 创建对比表
-    print("\n\n【部分1】特性对比表")
+    logger.info("\n\n【部分1】特性对比表")
     create_comparison_table()
 
     # 2. 决策矩阵
-    print("\n\n【部分2】应用场景决策矩阵")
+    logger.info("\n\n【部分2】应用场景决策矩阵")
     create_decision_matrix()
 
     # 3. 学习过程演示
-    print("\n\n【部分3】实验进程中的自适应演示")
+    logger.info("\n\n【部分3】实验进程中的自适应演示")
     demonstrate_learning_progression()
 
     # 4. 性能评估
-    print("\n\n【部分4】性能评估框架")
+    logger.info("\n\n【部分4】性能评估框架")
     performance_comparison_framework()
 
     # 5. 生成可视化
-    print("\n\n【部分5】生成可视化图表")
+    logger.info("\n\n【部分5】生成可视化图表")
     try:
         visualize_single_vs_multiscale()
     except ImportError:
-        print("⚠️  matplotlib 不可用，跳过可视化。")
-        print("   运行 'pip install matplotlib' 以启用图表生成。")
+        logger.warning("⚠️  matplotlib 不可用，跳过可视化。")
+        logger.info("   运行 'pip install matplotlib' 以启用图表生成。")
 
-    print("\n" + "=" * 80)
-    print("总结")
-    print("=" * 80)
-    print(
+    logger.info("\n" + "=" * 80)
+    logger.info("总结")
+    logger.info("=" * 80)
+    logger.info(
         """
     两个改进方向解决的是 GP 采集函数中的不同问题：
     

@@ -16,6 +16,7 @@ Example:
 from __future__ import annotations
 from typing import Any, Dict, Optional
 import torch
+from loguru import logger
 
 
 class DiagnosticsManager:
@@ -44,7 +45,7 @@ class DiagnosticsManager:
         pair_sum: Optional[torch.Tensor] = None,
         triplet_sum: Optional[torch.Tensor] = None,
         info_raw: Optional[torch.Tensor] = None,
-        cov: Optional[torch.Tensor] = None
+        cov: Optional[torch.Tensor] = None,
     ) -> None:
         """更新效应贡献缓存
 
@@ -75,7 +76,7 @@ class DiagnosticsManager:
         lambda_3: Optional[float] = None,
         n_train: int = 0,
         fitted: bool = False,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """获取诊断信息字典
 
@@ -121,98 +122,103 @@ class DiagnosticsManager:
 
         return diag
 
-    def print_diagnostics(
-        self,
-        diag: Dict[str, Any],
-        verbose: bool = False
-    ) -> None:
+    def print_diagnostics(self, diag: Dict[str, Any], verbose: bool = False) -> None:
         """打印诊断信息到控制台
 
         Args:
             diag: 诊断字典（从get_diagnostics获取）
             verbose: 是否打印详细信息（包括完整数组）
         """
-        print("\n" + "=" * 70)
-        print("EURAnovaPairAcqf 诊断信息")
-        print("=" * 70)
+        logger.info("\n" + "=" * 70)
+        logger.info("EURAnovaPairAcqf 诊断信息")
+        logger.info("=" * 70)
 
-        print(f"\n【动态权重状态】")
-        print(f"  λ_2 (二阶交互权重) = {diag.get('lambda_2', 0):.4f}")
+        logger.info(f"\n【动态权重状态】")
+        logger.info(f"  λ_2 (二阶交互权重) = {diag.get('lambda_2', 0):.4f}")
 
-        if diag.get('lambda_3', 0) > 0:
-            print(f"  λ_3 (三阶交互权重) = {diag.get('lambda_3', 0):.4f}")
+        if diag.get("lambda_3", 0) > 0:
+            logger.info(f"  λ_3 (三阶交互权重) = {diag.get('lambda_3', 0):.4f}")
 
-        print(f"  γ_t (覆盖权重) = {diag.get('gamma_t', 0):.4f}")
+        logger.info(f"  γ_t (覆盖权重) = {diag.get('gamma_t', 0):.4f}")
 
-        if 'lambda_min' in diag:
-            print(f"  λ 范围: [{diag.get('lambda_min', 0):.2f}, {diag.get('lambda_max', 1):.2f}]")
+        if "lambda_min" in diag:
+            logger.info(
+                f"  λ 范围: [{diag.get('lambda_min', 0):.2f}, {diag.get('lambda_max', 1):.2f}]"
+            )
 
-        if 'gamma_min' in diag:
-            print(f"  γ 范围: [{diag.get('gamma_min', 0):.2f}, {diag.get('gamma_max', 1):.2f}]")
+        if "gamma_min" in diag:
+            logger.info(
+                f"  γ 范围: [{diag.get('gamma_min', 0):.2f}, {diag.get('gamma_max', 1):.2f}]"
+            )
 
-        print(f"\n【模型状态】")
-        print(f"  训练样本数: {diag.get('n_train', 0)}")
+        logger.info(f"\n【模型状态】")
+        logger.info(f"  训练样本数: {diag.get('n_train', 0)}")
 
-        if 'tau_n_min' in diag and 'tau_n_max' in diag:
-            print(
+        if "tau_n_min" in diag and "tau_n_max" in diag:
+            logger.info(
                 f"  转向阈值: tau_n_min={diag['tau_n_min']}, "
                 f"tau_n_max={diag['tau_n_max']}"
             )
 
-        print(f"  模型已拟合: {'是' if diag.get('fitted', False) else '否'}")
+        logger.info(f"  模型已拟合: {'是' if diag.get('fitted', False) else '否'}")
 
-        print(f"\n【交互配置】")
+        logger.info(f"\n【交互配置】")
 
-        if 'n_pairs' in diag:
-            print(f"  二阶交互数量: {diag['n_pairs']}")
-            if diag['n_pairs'] > 0 and 'pairs' in diag:
-                pairs_str = ", ".join([f"({i},{j})" for i, j in diag['pairs'][:5]])
-                if diag['n_pairs'] > 5:
+        if "n_pairs" in diag:
+            logger.info(f"  二阶交互数量: {diag['n_pairs']}")
+            if diag["n_pairs"] > 0 and "pairs" in diag:
+                pairs_str = ", ".join([f"({i},{j})" for i, j in diag["pairs"][:5]])
+                if diag["n_pairs"] > 5:
                     pairs_str += f", ... (共{diag['n_pairs']}个)"
-                print(f"  二阶交互: {pairs_str}")
+                logger.info(f"  二阶交互: {pairs_str}")
 
-        if 'n_triplets' in diag:
-            print(f"  三阶交互数量: {diag['n_triplets']}")
-            if diag['n_triplets'] > 0 and 'triplets' in diag:
+        if "n_triplets" in diag:
+            logger.info(f"  三阶交互数量: {diag['n_triplets']}")
+            if diag["n_triplets"] > 0 and "triplets" in diag:
                 triplets_str = ", ".join(
-                    [f"({i},{j},{k})" for i, j, k in diag['triplets'][:3]]
+                    [f"({i},{j},{k})" for i, j, k in diag["triplets"][:3]]
                 )
-                if diag['n_triplets'] > 3:
+                if diag["n_triplets"] > 3:
                     triplets_str += f", ... (共{diag['n_triplets']}个)"
-                print(f"  三阶交互: {triplets_str}")
+                logger.info(f"  三阶交互: {triplets_str}")
 
         # 效应贡献
         if "main_effects_sum" in diag:
-            print(f"\n【效应贡献】(最后一次 forward() 调用)")
+            logger.info(f"\n【效应贡献】(最后一次 forward() 调用)")
 
             main = diag["main_effects_sum"]
-            print(f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}")
+            logger.info(f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}")
 
             if "pair_effects_sum" in diag:
                 pair = diag["pair_effects_sum"]
-                print(f"  二阶交互总和: mean={pair.mean():.4f}, std={pair.std():.4f}")
+                logger.info(
+                    f"  二阶交互总和: mean={pair.mean():.4f}, std={pair.std():.4f}"
+                )
 
             if "triplet_effects_sum" in diag:
                 triplet = diag["triplet_effects_sum"]
-                print(f"  三阶交互总和: mean={triplet.mean():.4f}, std={triplet.std():.4f}")
+                logger.info(
+                    f"  三阶交互总和: mean={triplet.mean():.4f}, std={triplet.std():.4f}"
+                )
 
             if "info_raw" in diag:
                 info = diag["info_raw"]
-                print(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
+                logger.info(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
 
             if "coverage" in diag:
                 cov = diag["coverage"]
-                print(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
+                logger.info(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
 
             if verbose:
-                print(f"\n  主效应数组:\n    {main}")
+                logger.debug(f"\n  主效应数组:\n    {main}")
                 if "pair_effects_sum" in diag:
-                    print(f"  二阶交互数组:\n    {pair}")
+                    logger.debug(f"  二阶交互数组:\n    {pair}")
                 if "triplet_effects_sum" in diag:
-                    print(f"  三阶交互数组:\n    {triplet}")
+                    logger.debug(f"  三阶交互数组:\n    {triplet}")
 
         else:
-            print(f"\n⚠️  效应贡献数据不可用")
-            print(f"   提示: 初始化时设置 debug_components=True")
+            logger.warning(
+                f"\n⚠️  效应贡献数据不可用 - 提示: 初始化时设置 debug_components=True"
+            )
 
-        print("=" * 70 + "\n")
+        logger.info("=" * 70 + "\n")

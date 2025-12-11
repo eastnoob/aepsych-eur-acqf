@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from typing import Dict, Optional, List, Callable, Tuple
 from dataclasses import dataclass
+from loguru import logger
 
 
 # ============================================================================
@@ -409,50 +410,50 @@ class EURAnovaPairAcqfEnhanced(MultiScalePerturbationMixin):
 # ============================================================================
 
 if __name__ == "__main__":
-    print("多尺度与学习型扰动的实现框架已准备就绪")
-    print()
-    print("用法1：启用多尺度")
-    print("-------")
-    print(
+    logger.info("多尺度与学习型扰动的实现框架已准备就绪")
+    logger.info("")
+    logger.info("用法1：启用多尺度")
+    logger.info("-------")
+    logger.info(
         """
-    multiscale_cfg = MultiScaleConfig(
-        scales=[0.05, 0.15, 0.3],
+multiscale_cfg = MultiScaleConfig(
+    scales=[0.05, 0.15, 0.3],
+    points_per_scale=2
+)
+acqf = EURAnovaPairAcqfEnhanced(
+    model=model,
+    use_multiscale=True,
+    multiscale_config=multiscale_cfg,
+)
+"""
+    )
+
+    logger.info("")
+    logger.info("用法2：启用学习型扰动")
+    logger.info("-------")
+    logger.info(
+        """
+acqf = EURAnovaPairAcqfEnhanced(
+    model=model,
+    use_learned_perturbation=True,
+)
+# 在 forward() 时自动更新学习统计
+"""
+    )
+
+    logger.info("")
+    logger.info("用法3：同时启用两者")
+    logger.info("-------")
+    logger.info(
+        """
+acqf = EURAnovaPairAcqfEnhanced(
+    model=model,
+    use_multiscale=True,
+    use_learned_perturbation=True,
+    multiscale_config=MultiScaleConfig(
+        scales=[0.05, 0.15],  # 减少尺度（因为学习分布已提供多样性）
         points_per_scale=2
     )
-    acqf = EURAnovaPairAcqfEnhanced(
-        model=model,
-        use_multiscale=True,
-        multiscale_config=multiscale_cfg,
-    )
-    """
-    )
-
-    print()
-    print("用法2：启用学习型扰动")
-    print("-------")
-    print(
-        """
-    acqf = EURAnovaPairAcqfEnhanced(
-        model=model,
-        use_learned_perturbation=True,
-    )
-    # 在 forward() 时自动更新学习统计
-    """
-    )
-
-    print()
-    print("用法3：同时启用两者")
-    print("-------")
-    print(
-        """
-    acqf = EURAnovaPairAcqfEnhanced(
-        model=model,
-        use_multiscale=True,
-        use_learned_perturbation=True,
-        multiscale_config=MultiScaleConfig(
-            scales=[0.05, 0.15],  # 减少尺度（因为学习分布已提供多样性）
-            points_per_scale=2
-        )
-    )
-    """
+)
+"""
     )

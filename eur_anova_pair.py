@@ -731,19 +731,21 @@ class EURAnovaPairAcqf(AcquisitionFunction):
                 n_levels = len(unique_vals)
 
                 # 【混合策略】判断是否使用穷举
-                if (self.use_hybrid_perturbation and
-                    n_levels <= self.exhaustive_level_threshold):
+                if (
+                    self.use_hybrid_perturbation
+                    and n_levels <= self.exhaustive_level_threshold
+                ):
                     # ========== 穷举模式 ==========
                     if self.exhaustive_use_cyclic_fill:
                         # 循环填充到local_num（均衡覆盖所有水平）
                         n_repeats = (self.local_num // n_levels) + 1
                         samples = np.tile(unique_vals, (B, n_repeats))
-                        samples = samples[:, :self.local_num]  # 裁剪到local_num
+                        samples = samples[:, : self.local_num]  # 裁剪到local_num
                     else:
                         # 只生成n_levels个样本（不填充）
                         samples = np.tile(unique_vals, (B, 1))
 
-                    base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                    base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                         dtype=X_can_t.dtype, device=X_can_t.device
                     )
                 else:
@@ -756,31 +758,39 @@ class EURAnovaPairAcqf(AcquisitionFunction):
             elif vt == "integer":
                 # 【改进】整数：混合策略（穷举 vs 高斯）
                 # 计算整数范围内的所有可能值
-                int_min = int(np.floor(mn[k].item() if torch.is_tensor(mn[k]) else mn[k]))
-                int_max = int(np.ceil(mx[k].item() if torch.is_tensor(mx[k]) else mx[k]))
+                int_min = int(
+                    np.floor(mn[k].item() if torch.is_tensor(mn[k]) else mn[k])
+                )
+                int_max = int(
+                    np.ceil(mx[k].item() if torch.is_tensor(mx[k]) else mx[k])
+                )
                 all_integers = np.arange(int_min, int_max + 1)
                 n_levels = len(all_integers)
 
                 # 【混合策略】判断是否使用穷举
-                if (self.use_hybrid_perturbation and
-                    n_levels <= self.exhaustive_level_threshold):
+                if (
+                    self.use_hybrid_perturbation
+                    and n_levels <= self.exhaustive_level_threshold
+                ):
                     # ========== 穷举模式 ==========
                     if self.exhaustive_use_cyclic_fill:
                         # 循环填充到local_num
                         n_repeats = (self.local_num // n_levels) + 1
                         samples = np.tile(all_integers, (B, n_repeats))
-                        samples = samples[:, :self.local_num]
+                        samples = samples[:, : self.local_num]
                     else:
                         # 只生成n_levels个样本
                         samples = np.tile(all_integers, (B, 1))
 
-                    base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+                    base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                         dtype=X_can_t.dtype, device=X_can_t.device
                     )
                 else:
                     # ========== 高斯扰动模式（原始逻辑）==========
                     sigma = self.local_jitter_frac * span[k]
-                    noise = torch.randn(B, self.local_num, device=X_can_t.device) * sigma
+                    noise = (
+                        torch.randn(B, self.local_num, device=X_can_t.device) * sigma
+                    )
                     base[:, :, k] = torch.round(
                         torch.clamp(base[:, :, k] + noise, min=mn[k], max=mx[k])
                     )
@@ -1342,51 +1352,72 @@ class EURAnovaPairAcqf(AcquisitionFunction):
         """
         diag = self.get_diagnostics()
 
-        print("\n" + "=" * 70)
-        print("EURAnovaPairAcqf 诊断信息")
-        print("=" * 70)
+        # Short summary (info) when called
+        try:
+            summary = (
+                f"[EUR Pair] n_train={diag.get('n_train', 0)} "
+                f"λ_t={diag.get('lambda_t', 0.0):.3f} γ_t={diag.get('gamma_t', 0.0):.3f}"
+            )
+        except Exception:
+            summary = "[EUR Pair] diagnostics summary unavailable"
 
-        print(f"\n【动态权重状态】")
-        print(
-            f"  λ_t (交互权重) = {diag['lambda_t']:.4f}  (范围: [{diag['lambda_min']}, {diag['lambda_max']}])"
-        )
-        print(
-            f"  γ_t (覆盖权重) = {diag['gamma_t']:.4f}  (范围: [{diag['gamma_min']}, {diag['gamma_max']}])"
-        )
+        from loguru import logger
 
-        print(f"\n【模型状态】")
-        print(f"  训练样本数: {diag['n_train']}")
-        print(
-            f"  转向阈值: tau_n_min={diag['tau_n_min']}, tau_n_max={diag['tau_n_max']}"
-        )
-        print(f"  模型已拟合: {'是' if diag['fitted'] else '否'}")
+        logger.info(summary)
 
-        print(f"\n【交互对配置】")
-        print(f"  交互对数量: {diag['n_pairs']}")
-        if diag["n_pairs"] > 0:
-            pairs_str = ", ".join([f"({i},{j})" for i, j in diag["pairs"][:5]])
-            if diag["n_pairs"] > 5:
-                pairs_str += f", ... (共{diag['n_pairs']}个)"
-            print(f"  交互对: {pairs_str}")
+        # Detailed output (respect verbose flag)
+        if verbose:
+            logger.debug("\n" + "=" * 70)
+            logger.debug("EURAnovaPairAcqf 诊断信息")
+            logger.debug("=" * 70)
 
-        if "main_effects_sum" in diag:
-            print(f"\n【效应贡献】(最后一次 forward() 调用)")
-            main = diag["main_effects_sum"]
-            pair = diag["pair_effects_sum"]
-            info = diag["info_raw"]
-            cov = diag["coverage"]
+            logger.debug(f"\n【动态权重状态】")
+            logger.debug(
+                f"  lambda_t (交互权重) = {diag.get('lambda_t', 0):.4f}  (范围: [{diag.get('lambda_min')}, {diag.get('lambda_max')}])"
+            )
+            logger.debug(
+                f"  gamma_t (覆盖权重) = {diag.get('gamma_t', 0):.4f}  (范围: [{diag.get('gamma_min')}, {diag.get('gamma_max')}])"
+            )
 
-            print(f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}")
-            print(f"  交互效应总和: mean={pair.mean():.4f}, std={pair.std():.4f}")
-            print(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
-            print(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
+            logger.debug(f"\n【模型状态】")
+            logger.debug(f"  训练样本数: {diag.get('n_train')}")
+            logger.debug(
+                f"  转向阈值: tau_n_min={diag.get('tau_n_min')}, tau_n_max={diag.get('tau_n_max')}"
+            )
+            logger.debug(f"  模型已拟合: {'是' if diag.get('fitted') else '否'}")
 
-            if verbose:
-                print(f"\n  主效应数组:\n    {main}")
-                print(f"  交互效应数组:\n    {pair}")
+            logger.debug(f"\n【交互对配置】")
+            logger.debug(f"  交互对数量: {diag.get('n_pairs')}")
+            if diag.get("n_pairs", 0) > 0:
+                pairs_str = ", ".join(
+                    [f"({i},{j})" for i, j in diag.get("pairs", [])[:5]]
+                )
+                if diag.get("n_pairs", 0) > 5:
+                    pairs_str += f", ... (共{diag.get('n_pairs')}个)"
+                logger.debug(f"  交互对: {pairs_str}")
 
-        else:
-            print(f"\n⚠️  效应贡献数据不可用")
-            print(f"   提示: 初始化时设置 debug_components=True")
+            if "main_effects_sum" in diag:
+                logger.debug(f"\n【效应贡献】(最后一次 forward() 调用)")
+                main = diag["main_effects_sum"]
+                pair = diag["pair_effects_sum"]
+                info = diag["info_raw"]
+                cov = diag["coverage"]
 
-        print("=" * 70 + "\n")
+                logger.debug(
+                    f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}"
+                )
+                logger.debug(
+                    f"  交互效应总和: mean={pair.mean():.4f}, std={pair.std():.4f}"
+                )
+                logger.debug(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
+                logger.debug(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
+
+                logger.debug(f"\n  主效应数组:\n    {main}")
+                logger.debug(f"  交互效应数组:\n    {pair}")
+
+            else:
+                logger.warning(
+                    "\n⚠️  效应贡献数据不可用 - 提示: 初始化时设置 debug_components=True"
+                )
+
+            logger.debug("=" * 70 + "\n")

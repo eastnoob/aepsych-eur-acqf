@@ -373,3 +373,55 @@ def validate_interaction_indices(
     ]
 
     return valid_pairs, valid_triplets
+
+
+def parse_diagnostics_options(options: Union[Dict[str, Any], None]) -> Dict[str, Any]:
+    """Parse diagnostics/logging related options from a config-like mapping.
+
+    Accepts a dict or None and returns normalized diagnostics settings.
+
+    Returned keys:
+      - diagnostics_enabled: bool
+      - diagnostics_verbose: bool
+      - diagnostics_output_file: Optional[str]
+      - log_level: str
+    """
+    defaults = {
+        "diagnostics_enabled": False,
+        "diagnostics_verbose": False,
+        "diagnostics_output_file": None,
+        "log_level": "WARNING",
+    }
+
+    if not options:
+        return defaults
+
+    out = defaults.copy()
+    # accept multiple key styles
+    for k in out.keys():
+        if k in options:
+            out[k] = options[k]
+        else:
+            # accept shorter aliases
+            alias = k.replace("diagnostics_", "")
+            if alias in options:
+                out[k] = options[alias]
+
+    # coerce types
+    out["diagnostics_enabled"] = str(out["diagnostics_enabled"]).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    out["diagnostics_verbose"] = str(out["diagnostics_verbose"]).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if out["diagnostics_output_file"] == "" or out["diagnostics_output_file"] is False:
+        out["diagnostics_output_file"] = None
+    out["log_level"] = str(out["log_level"]).upper()
+
+    return out

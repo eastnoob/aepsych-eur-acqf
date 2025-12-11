@@ -48,6 +48,7 @@ Example:
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from loguru import logger
 import warnings
 import numpy as np
 import torch
@@ -168,6 +169,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         auto_local_num_max: int = 12,  # 自动计算上限
         # ========== 调试 ==========
         debug_components: Union[bool, str] = False,
+        # ========== 日志/诊断控制（扩展） ==========
+        diagnostics_enabled: bool = False,
+        diagnostics_verbose: bool = False,
+        diagnostics_output_file: Optional[str] = None,
+        log_level: str = "WARNING",
     ) -> None:
         super().__init__(model=model)
 
@@ -336,7 +342,34 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         self.anova_engine: Optional[ANOVAEffectEngine] = None
 
         # 6. 诊断管理器
-        self.diagnostics = DiagnosticsManager(debug_components=self.debug_components)
+        try:
+            self.diagnostics = DiagnosticsManager(
+                debug_components=self.debug_components,
+                enabled=bool(diagnostics_enabled),
+                verbose_mode=bool(diagnostics_verbose),
+                output_file=diagnostics_output_file,
+            )
+        except Exception:
+            # Fallback to minimal diagnostics manager if import issues
+            self.diagnostics = DiagnosticsManager(
+                debug_components=self.debug_components
+            )
+        # Configure module-level logger if helper available
+        try:
+            from .logging_setup import configure_logger
+
+            configure_logger(level=log_level)
+        except Exception:
+            try:
+                # fallback absolute import
+                from logging_setup import configure_logger
+
+                configure_logger(level=log_level)
+            except Exception:
+                # If configuration fails, rely on existing logger configuration
+                logger.debug(
+                    "logging_setup unavailable; using existing logger configuration"
+                )
 
         # ========== 状态缓存 ==========
         self._X_train_np: Optional[np.ndarray] = None
@@ -370,20 +403,21 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         import sys
 
         if not hasattr(self.model, "train_inputs") or self.model.train_inputs is None:
-            print(f"[EUR _ensure_fresh_data] No train_inputs on model", file=sys.stderr)
+            logger.warning("[EUR _ensure_fresh_data] No train_inputs on model")
             return
 
         X_t = self.model.train_inputs[0]
         y_t = getattr(self.model, "train_targets", None)
 
         if X_t is None or y_t is None:
-            print(f"[EUR _ensure_fresh_data] X_t or y_t is None", file=sys.stderr)
+            logger.warning("[EUR _ensure_fresh_data] X_t or y_t is None")
             return
 
         n = X_t.shape[0]
-        print(
-            f"[EUR _ensure_fresh_data] model_id={id(self.model)}, train_inputs.shape={X_t.shape}, n={n}, _last_hist_n={self._last_hist_n}, _fitted={self._fitted}",
-            file=sys.stderr,
+        logger.debug(
+            "[EUR _ensure_fresh_data] model_id={} train_inputs.shape={} n={} _last_hist_n={} _fitted={}".format(
+                id(self.model), X_t.shape, n, self._last_hist_n, self._fitted
+            )
         )
 
         # 首次初始化或数据更新
@@ -398,14 +432,10 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             # 更新各模块
             self.local_sampler.update_data(self._X_train_np)
             self.coverage_helper.update_training_data(self._X_train_np)
-            print(
-                f"[EUR _ensure_fresh_data] Updating weight_engine with n={n}",
-                file=sys.stderr,
-            )
+            logger.debug(f"[EUR _ensure_fresh_data] Updating weight_engine with n={n}")
             self.weight_engine.update_training_status(n, self._fitted)
-            print(
-                f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}",
-                file=sys.stderr,
+            logger.debug(
+                f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}"
             )
 
             # 验证交互索引并过滤越界项
@@ -494,7 +524,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         """
         import sys
 
-        print(f"[EUR forward] Called with X.shape={X.shape}", file=sys.stderr)
+        logger.debug(f"[EUR forward] Called with X.shape={X.shape}")
         self._ensure_fresh_data()
 
         if (

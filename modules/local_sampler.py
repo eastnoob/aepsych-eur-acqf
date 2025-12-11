@@ -18,6 +18,7 @@ Example:
 
 from __future__ import annotations
 from typing import Optional, Dict, List, Sequence
+from loguru import logger
 import warnings
 import numpy as np
 import torch
@@ -172,6 +173,7 @@ class LocalSampler:
             最小公倍数
         """
         import math
+
         if not numbers:
             return self._local_num_manual
 
@@ -204,7 +206,10 @@ class LocalSampler:
                     n_levels = len(self._unique_vals_dict[dim_idx])
                 else:
                     # 对于integer类型，从feature_ranges计算
-                    if self._feature_ranges is not None and 0 <= dim_idx < self._feature_ranges.shape[1]:
+                    if (
+                        self._feature_ranges is not None
+                        and 0 <= dim_idx < self._feature_ranges.shape[1]
+                    ):
                         min_val = self._feature_ranges[0, dim_idx]
                         max_val = self._feature_ranges[1, dim_idx]
                         n_levels = int(max_val - min_val) + 1
@@ -221,7 +226,7 @@ class LocalSampler:
             warnings.warn(
                 f"auto_compute_local_num=True 但没有找到低水平离散变量 "
                 f"(≤{self.exhaustive_level_threshold}水平)，使用手动设置值 local_num={self._local_num_manual}",
-                UserWarning
+                UserWarning,
             )
             return
 
@@ -235,20 +240,16 @@ class LocalSampler:
                 f"自动计算的 local_num={computed_lcm} 超过上限 {self.auto_local_num_max}，"
                 f"已限制为 {self.auto_local_num_max}。"
                 f"低水平变量水平数: {low_level_counts}",
-                UserWarning
+                UserWarning,
             )
         else:
             self.local_num = computed_lcm
-            print(
+            logger.info(
                 f"[LocalSampler] 自动计算 local_num = {self.local_num} "
                 f"(基于低水平变量: {low_level_counts}, LCM={computed_lcm})"
             )
 
-    def sample(
-        self,
-        X_can_t: torch.Tensor,
-        dims: Sequence[int]
-    ) -> torch.Tensor:
+    def sample(self, X_can_t: torch.Tensor, dims: Sequence[int]) -> torch.Tensor:
         """生成局部扰动点
 
         Args:
@@ -267,14 +268,10 @@ class LocalSampler:
             mx = torch.ones(d, dtype=X_can_t.dtype, device=X_can_t.device)
         else:
             mn = torch.as_tensor(
-                self._feature_ranges[0],
-                dtype=X_can_t.dtype,
-                device=X_can_t.device
+                self._feature_ranges[0], dtype=X_can_t.dtype, device=X_can_t.device
             )
             mx = torch.as_tensor(
-                self._feature_ranges[1],
-                dtype=X_can_t.dtype,
-                device=X_can_t.device
+                self._feature_ranges[1], dtype=X_can_t.dtype, device=X_can_t.device
             )
 
         span = torch.clamp(mx - mn, min=1e-6)
@@ -297,12 +294,7 @@ class LocalSampler:
 
         return base.reshape(B * self.local_num, d)
 
-    def _perturb_categorical(
-        self,
-        base: torch.Tensor,
-        k: int,
-        B: int
-    ) -> torch.Tensor:
+    def _perturb_categorical(self, base: torch.Tensor, k: int, B: int) -> torch.Tensor:
         """分类变量扰动：混合策略（穷举 vs 随机采样）
 
         策略选择：
@@ -323,21 +315,20 @@ class LocalSampler:
         n_levels = len(unique_vals)
 
         # 【混合策略】判断是否使用穷举
-        if (self.use_hybrid_perturbation and
-            n_levels <= self.exhaustive_level_threshold):
+        if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
             # ========== 穷举模式 ==========
             if self.exhaustive_use_cyclic_fill:
                 # 循环填充到local_num（均衡覆盖所有水平）
                 # 例如：3水平 + local_num=6 → [0,1,2,0,1,2]
                 n_repeats = (self.local_num // n_levels) + 1
                 samples = np.tile(unique_vals, (B, n_repeats))
-                samples = samples[:, :self.local_num]  # 裁剪到local_num
+                samples = samples[:, : self.local_num]  # 裁剪到local_num
             else:
                 # 只生成n_levels个样本（不填充）
                 # 例如：3水平 → [0,1,2] （忽略local_num）
                 samples = np.tile(unique_vals, (B, 1))
 
-            base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+            base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
             )
         else:
@@ -350,13 +341,7 @@ class LocalSampler:
         return base
 
     def _perturb_integer(
-        self,
-        base: torch.Tensor,
-        k: int,
-        B: int,
-        mn: float,
-        mx: float,
-        span: float
+        self, base: torch.Tensor, k: int, B: int, mn: float, mx: float, span: float
     ) -> torch.Tensor:
         """整数变量扰动：混合策略（穷举 vs 高斯）
 
@@ -371,19 +356,18 @@ class LocalSampler:
         n_levels = len(all_integers)
 
         # 【混合策略】判断是否使用穷举
-        if (self.use_hybrid_perturbation and
-            n_levels <= self.exhaustive_level_threshold):
+        if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
             # ========== 穷举模式 ==========
             if self.exhaustive_use_cyclic_fill:
                 # 循环填充到local_num
                 n_repeats = (self.local_num // n_levels) + 1
                 samples = np.tile(all_integers, (B, n_repeats))
-                samples = samples[:, :self.local_num]
+                samples = samples[:, : self.local_num]
             else:
                 # 只生成n_levels个样本
                 samples = np.tile(all_integers, (B, 1))
 
-            base[:, :samples.shape[1], k] = torch.from_numpy(samples).to(
+            base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
             )
         else:
@@ -397,13 +381,7 @@ class LocalSampler:
         return base
 
     def _perturb_continuous(
-        self,
-        base: torch.Tensor,
-        k: int,
-        B: int,
-        mn: float,
-        mx: float,
-        span: float
+        self, base: torch.Tensor, k: int, B: int, mn: float, mx: float, span: float
     ) -> torch.Tensor:
         """连续变量扰动：高斯扰动"""
         sigma = self.local_jitter_frac * span
