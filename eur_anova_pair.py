@@ -486,10 +486,15 @@ class EURAnovaPairAcqf(AcquisitionFunction):
                             if Ordinal is not None and isinstance(sub, Ordinal):
                                 is_ordinal = True
                             # 检测常见扩展属性（如 CustomOrdinal 实现）
-                            elif hasattr(sub, "normalized_values") or hasattr(sub, "physical_to_normalized"):
+                            elif hasattr(sub, "normalized_values") or hasattr(
+                                sub, "physical_to_normalized"
+                            ):
                                 is_ordinal = True
                             # 兜底：类名中带 'ordinal'（不区分大小写）
-                            elif hasattr(sub, "__class__") and "ordinal" in sub.__class__.__name__.lower():
+                            elif (
+                                hasattr(sub, "__class__")
+                                and "ordinal" in sub.__class__.__name__.lower()
+                            ):
                                 is_ordinal = True
 
                             if is_ordinal:
