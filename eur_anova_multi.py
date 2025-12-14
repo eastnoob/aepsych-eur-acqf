@@ -653,12 +653,22 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
     # ========== 诊断接口 ==========
 
-    def get_diagnostics(self) -> Dict[str, Any]:
+    def get_diagnostics(self, X: Optional[torch.Tensor] = None) -> Dict[str, Any]:
         """获取完整诊断信息
 
         【重要修复】主动计算动态权重而非读取缓存
         - 调用 compute_lambda() 和 compute_gamma() 触发实际计算
         - 确保诊断信息反映当前模型状态
+
+        Args:
+            X: Optional (B, d) 候选点张量。如果提供，将计算以下额外诊断：
+               - model_entropy: 模型信息熵（序数模型）
+               - min_distance: 到历史点的最小距离
+               - acqf_mean: 模型后验均值
+               - acqf_std: 模型后验标准差
+
+        Returns:
+            诊断信息字典
         """
         # 【修复】确保数据已同步（这样 _last_hist_n 会被正确更新）
         self._ensure_fresh_data()
@@ -703,6 +713,69 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
         # 【修复】添加 r_t 到诊断信息
         diag["r_t"] = r_t
+
+        # 【新增】如果提供了候选点，计算额外诊断信息
+        if X is not None and self._fitted:
+            try:
+                # 确保 X 是 2D 张量 (B, d)
+                if X.dim() == 1:
+                    X = X.unsqueeze(0)
+                elif X.dim() == 3 and X.shape[-2] == 1:
+                    X = X.squeeze(-2)
+
+                # 1. 计算模型后验均值和标准差
+                try:
+                    with torch.no_grad():
+                        posterior = self.model.posterior(X)
+                        mean = posterior.mean.squeeze()
+                        variance = posterior.variance.squeeze()
+
+                        # 如果是批次，取第一个点的值
+                        if mean.dim() > 0:
+                            diag["acqf_mean"] = float(mean[0])
+                            diag["acqf_std"] = float(torch.sqrt(variance[0]))
+                        else:
+                            diag["acqf_mean"] = float(mean)
+                            diag["acqf_std"] = float(torch.sqrt(variance))
+                except Exception as e:
+                    logger.debug(f"Failed to compute acqf_mean/std: {type(e).__name__}: {e}")
+                    diag["acqf_mean"] = None
+                    diag["acqf_std"] = None
+
+                # 2. 计算模型熵（仅序数模型）
+                try:
+                    if self.ordinal_helper.is_ordinal():
+                        entropy = self.ordinal_helper.compute_entropy(X)
+                        # 如果是批次，取第一个点的值
+                        if entropy.dim() > 0:
+                            diag["model_entropy"] = float(entropy[0])
+                        else:
+                            diag["model_entropy"] = float(entropy)
+                    else:
+                        diag["model_entropy"] = None
+                except Exception as e:
+                    logger.debug(f"Failed to compute model_entropy: {e}")
+                    diag["model_entropy"] = None
+
+                # 3. 计算最小距离（覆盖度的倒数）
+                try:
+                    coverage = self.coverage_helper.compute_coverage(X)
+                    # coverage 越大表示距离越远
+                    # 我们计算覆盖度本身作为距离度量
+                    if coverage.dim() > 0:
+                        cov_val = float(coverage[0])
+                    else:
+                        cov_val = float(coverage)
+
+                    # 覆盖度已经是距离度量，直接使用
+                    # (coverage_helper使用Gower距离，值越大越远)
+                    diag["min_distance"] = cov_val if cov_val > 0 else None
+                except Exception as e:
+                    logger.debug(f"Failed to compute min_distance: {e}")
+                    diag["min_distance"] = None
+
+            except Exception as e:
+                logger.warning(f"Failed to compute extended diagnostics: {e}")
 
         return diag
 
