@@ -44,6 +44,7 @@ class SPS_Tracker:
         sensitivity: Amplification factor for prediction changes (default 8.0)
         ema_alpha: Exponential moving average weight (default 0.7)
         r_t_smoothed: EMA-smoothed stability metric
+        variable_types: Optional dict mapping dimension indices to variable types
     """
 
     def __init__(
@@ -51,6 +52,7 @@ class SPS_Tracker:
         bounds: torch.Tensor,
         sensitivity: float = 8.0,
         ema_alpha: float = 0.7,
+        variable_types: Optional[dict] = None,
     ):
         """Initialize SPS Tracker
 
@@ -60,13 +62,17 @@ class SPS_Tracker:
                 Higher values amplify small prediction changes
             ema_alpha: EMA smoothing weight (default 0.7)
                 Higher values = more smoothing
+            variable_types: Optional dict {dim_idx: type_str} for discrete-aware
+                skeleton generation. Supported types: 'categorical', 'ordinal',
+                'integer', 'continuous'
         """
         self.bounds = bounds
         self.sensitivity = sensitivity
         self.ema_alpha = ema_alpha
+        self.variable_types = variable_types
 
-        # Generate skeleton points: center + per-dimension extremes
-        self.skeleton_points = self._generate_skeleton_points()
+        # Lazy skeleton generation (will be created in first compute_r_t call)
+        self.skeleton_points: Optional[torch.Tensor] = None
 
         # State tracking
         self.prev_predictions: Optional[torch.Tensor] = None
@@ -76,8 +82,16 @@ class SPS_Tracker:
         self._last_train_size: int = 0  # 上次记录的训练集大小
         self._cached_r_t: Optional[float] = None  # 当前迭代缓存的r_t值
 
-    def _generate_skeleton_points(self) -> torch.Tensor:
+    def _generate_skeleton_points(
+        self, X_train: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Generate skeleton points: center + 2 extremes per dimension
+
+        For discrete dimensions, uses median of observed values instead of
+        arithmetic midpoint to ensure skeleton points are valid.
+
+        Args:
+            X_train: Optional training data (N, d) for computing medians
 
         Returns:
             Tensor of shape (2*d + 1, d)
@@ -88,8 +102,25 @@ class SPS_Tracker:
 
         skeleton_points = []
 
-        # 1. Center point
+        # 1. Center point (discrete-aware)
         center = (lower + upper) / 2.0
+
+        # Use median for discrete dimensions if training data available
+        if X_train is not None and self.variable_types is not None:
+            for dim_idx, vtype in self.variable_types.items():
+                if vtype in ['categorical', 'ordinal', 'custom_ordinal',
+                            'custom_ordinal_mono', 'integer']:
+                    # Use median of observed values (guaranteed to be valid)
+                    unique_vals = torch.unique(X_train[:, dim_idx])
+                    if len(unique_vals) > 0:
+                        median_idx = len(unique_vals) // 2
+                        center[dim_idx] = unique_vals[median_idx]
+                        logger.debug(
+                            f"[SPS] Dim {dim_idx} ({vtype}): using median "
+                            f"{center[dim_idx].item():.3f} instead of midpoint "
+                            f"{((lower[dim_idx] + upper[dim_idx]) / 2).item():.3f}"
+                        )
+
         skeleton_points.append(center)
 
         # 2. Per-dimension extremes
@@ -119,14 +150,24 @@ class SPS_Tracker:
             r_t ∈ [0, 1]: 0 = stable (converged), 1 = unstable (not converged)
         """
         try:
-            # 获取模型训练数据量以便调试
+            # 获取模型训练数据
             train_size = 0
+            X_train = None
             if hasattr(model, "train_inputs") and model.train_inputs is not None:
                 if (
                     isinstance(model.train_inputs, tuple)
                     and len(model.train_inputs) > 0
                 ):
-                    train_size = model.train_inputs[0].shape[0]
+                    X_train = model.train_inputs[0]
+                    train_size = X_train.shape[0]
+
+            # Lazy skeleton generation on first call
+            if self.skeleton_points is None:
+                self.skeleton_points = self._generate_skeleton_points(X_train)
+                logger.info(
+                    f"[SPS] Generated skeleton points: shape={self.skeleton_points.shape}, "
+                    f"center={self.skeleton_points[0]}"
+                )
 
             # 【缓存机制】如果train_size没变,返回缓存的r_t值
             if train_size == self._last_train_size and self._cached_r_t is not None:
@@ -247,6 +288,7 @@ class DynamicWeightEngine:
         use_sps: bool = True,
         sps_sensitivity: float = 8.0,
         sps_ema_alpha: float = 0.7,
+        sps_variable_types: Optional[dict] = None,
         # Adaptive Gamma Safety Brake 参数
         tau_safe: float = 0.5,
         gamma_penalty_beta: float = 0.3,
@@ -269,6 +311,7 @@ class DynamicWeightEngine:
             use_sps: 是否使用SPS方法计算r_t（替代参数变化率）
             sps_sensitivity: SPS敏感度系数（默认8.0）
             sps_ema_alpha: SPS平滑系数（默认0.7）
+            sps_variable_types: Optional dict {dim_idx: type_str} for discrete-aware SPS
             tau_safe: Gamma安全刹车阈值（默认0.5）
             gamma_penalty_beta: Gamma惩罚强度（默认0.3）
         """
@@ -329,6 +372,7 @@ class DynamicWeightEngine:
                     bounds=bounds,
                     sensitivity=sps_sensitivity,
                     ema_alpha=sps_ema_alpha,
+                    variable_types=sps_variable_types,
                 )
             elif self.use_sps and bounds is None:
                 import warnings

@@ -314,6 +314,7 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             use_sps=use_sps,
             sps_sensitivity=sps_sensitivity,
             sps_ema_alpha=sps_ema_alpha,
+            sps_variable_types=variable_types,
             tau_safe=tau_safe,
             gamma_penalty_beta=gamma_penalty_beta,
         )
