@@ -155,6 +155,35 @@ def test_sps_integration_with_model():
     print("[PASS] Integration test passed")
 
 
+def test_sps_handles_2d_train_targets_in_singletaskgp():
+    """Regression test for GPyTorch train_targets shape mismatch seen in SPS.
+
+    Reproduction: create a SingleTaskGP with `train_y.unsqueeze(-1)` (shape (N,1))
+    — prior to fix, `compute_r_t()` raised a GPyTorch "Flattening the training
+    labels failed" error. After normalization the call should succeed and
+    return an r_t ∈ [0, 1].
+    """
+    from botorch.models.gp_regression import SingleTaskGP
+
+    dim = 3
+    # Use float64 to match common model dtype in the codebase
+    X_train = torch.rand(4, dim, dtype=torch.float64)
+    y = X_train.sum(dim=-1).to(torch.float64)
+
+    # Intentionally create targets with trailing singleton dimension
+    model = SingleTaskGP(X_train, y.unsqueeze(-1))
+    model.eval()
+
+    tracker = SPS_Tracker(bounds=torch.tensor([[0.0] * dim, [1.0] * dim], dtype=torch.float64))
+
+    # Should not raise and should return a float in [0, 1]
+    r_t = tracker.compute_r_t(model)
+    assert isinstance(r_t, float)
+    assert 0.0 <= r_t <= 1.0
+
+    print("[PASS] SPS handles 2D train_targets for SingleTaskGP")
+
+
 if __name__ == "__main__":
     print("Running SPS discrete-aware tests...\n")
 

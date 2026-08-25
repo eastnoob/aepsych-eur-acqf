@@ -443,8 +443,14 @@ def create_effects_from_config(
 
     # 二阶交互
     if interaction_pairs is not None:
+        # 指定列表模式
         for i, j in interaction_pairs:
             effects.append(PairwiseEffect(i, j))
+    elif enable_main and n_dims > 1:
+        # None && enable_pairwise 被 EURAnovaMultiAcqf 解释为 "all"
+        # 注意: 这里需要 external 逻辑保证 interaction_pairs=None 代表全交互
+        # 为了安全，create_effects_from_config 默认不猜测，但我们可以增加一个显式的全交互逻辑
+        pass # 由调用者决定是否需要在这里自动补全
 
     # 三阶交互
     if interaction_triplets is not None:

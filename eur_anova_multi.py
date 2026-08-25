@@ -231,12 +231,30 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
 
         # 二阶权重
         self.use_dynamic_lambda_2 = lambda_2 is None
-        self.lambda_2 = float(lambda_2) if lambda_2 is not None else lambda_max
 
-        # 【新增】lambda_2_init：用于动态模式下的初始值（默认为lambda_min）
-        self.lambda_2_init = (
-            float(lambda_2_init) if lambda_2_init is not None else lambda_min
-        )
+        if (not self.use_dynamic_lambda_2) and lambda_2_init is not None:
+            warnings.warn(
+                "lambda_2_init is ignored when lambda_2 is explicitly set."
+            )
+
+        if use_piecewise_lambda and lambda_2_init is not None:
+            warnings.warn(
+                "lambda_2_init is ignored when use_piecewise_lambda=True; "
+                "piecewise_lambda_low controls the initial lambda."
+            )
+
+        if self.use_dynamic_lambda_2:
+            if use_piecewise_lambda:
+                self.lambda_2 = float(piecewise_lambda_low)
+            elif lambda_2_init is not None:
+                self.lambda_2 = float(lambda_2_init)
+            else:
+                self.lambda_2 = float(lambda_min)
+        else:
+            self.lambda_2 = float(lambda_2)
+
+        # lambda_2_init 仅用于动态模式的初始值展示与首阶段 warm start。
+        self.lambda_2_init = self.lambda_2
 
         # 三阶权重（默认0.5，避免过拟合）
         self.lambda_3 = float(lambda_3) if lambda_3 is not None else 0.5
@@ -300,6 +318,11 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             tau2=tau2,
             lambda_min=lambda_min,
             lambda_max=lambda_max,
+            lambda_initial=(
+                self.lambda_2_init
+                if self.use_dynamic_lambda_2 and not use_piecewise_lambda
+                else None
+            ),
             use_piecewise_lambda=use_piecewise_lambda,
             piecewise_phase1_end=piecewise_phase1_end,
             piecewise_phase2_end=piecewise_phase2_end,
@@ -439,6 +462,20 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
                 f"[EUR _ensure_fresh_data] weight_engine._n_train={self.weight_engine._n_train}"
             )
 
+            # 【新增】自动从模型内核工厂继承交互对（如果未显式指定）
+            if self.enable_pairwise and (self._pairs is None or len(self._pairs) == 0):
+                if hasattr(self.model, "mean_covar_factory") and hasattr(
+                    self.model.mean_covar_factory, "interaction_pairs"
+                ):
+                    model_pairs = self.model.mean_covar_factory.interaction_pairs
+                    if model_pairs:
+                        from .modules.config_parser import parse_interaction_pairs
+
+                        self._pairs = parse_interaction_pairs(model_pairs)
+                        logger.info(
+                            f"[EUR] Inherited {len(self._pairs)} interaction pairs from model kernel factory"
+                        )
+
             # 验证交互索引并过滤越界项
             self._pairs, self._triplets = validate_interaction_indices(
                 self._pairs, self._triplets, self._n_dims
@@ -564,10 +601,20 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
             )
 
         # ========== 构造效应列表 ==========
+        current_pairs = self._pairs
+        if self.enable_pairwise and (current_pairs is None or len(current_pairs) == 0):
+            # 自动生成全交互对
+            from itertools import combinations
+            current_pairs = list(combinations(range(d), 2))
+            self._pairs = current_pairs
+            self._config["n_pairs"] = len(self._pairs)
+            self._config["pairs"] = self._pairs
+            logger.debug(f"EURAnovaMultiAcqf: Generated all {len(current_pairs)} interaction pairs for {d} dims")
+
         effects = create_effects_from_config(
             n_dims=d,
             enable_main=self.enable_main,
-            interaction_pairs=self._pairs if self.enable_pairwise else None,
+            interaction_pairs=current_pairs,
             interaction_triplets=self._triplets if self.enable_threeway else None,
         )
 
@@ -601,10 +648,13 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         # 信息项融合
         info_raw = self.main_weight * main_sum
 
-        if self.enable_pairwise and len(self._pairs) > 0:
+        pair_count = len(current_pairs) if current_pairs is not None else 0
+        triplet_count = len(self._triplets)
+
+        if self.enable_pairwise and pair_count > 0:
             info_raw = info_raw + lambda_2_t * pair_sum
 
-        if self.enable_threeway and len(self._triplets) > 0:
+        if self.enable_threeway and triplet_count > 0:
             info_raw = info_raw + lambda_3_t * triplet_sum
 
         # ========== 覆盖项计算 ==========
@@ -784,6 +834,10 @@ class EURAnovaMultiAcqf(AcquisitionFunction):
         """打印诊断信息到控制台"""
         diag = self.get_diagnostics()
         self.diagnostics.print_diagnostics(diag, verbose=verbose)
+
+    def save_diagnostics_history(self, path: str) -> None:
+        """保存权重历史到CSV文件"""
+        self.diagnostics.save_history_csv(path)
 
 
 # Register with AEPsych Config system

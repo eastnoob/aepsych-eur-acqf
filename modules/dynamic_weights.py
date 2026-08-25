@@ -184,10 +184,58 @@ class SPS_Tracker:
 
             # Get current predictions on skeleton points
             with torch.no_grad():
+                # Defensive normalization: if the underlying model exposes train_targets
+                # as shape (N, 1) (common when callers use `.unsqueeze(-1)`), normalize
+                # it to (N,) before causing GPyTorch to rebuild prediction_strategy.
+                # This is an upstream normalization that fixes the "Flattening the
+                # training labels failed" error observed in SPS tests.
+                try:
+                    if hasattr(model, "train_targets") and model.train_targets is not None:
+                        y_train = model.train_targets
+                        if isinstance(y_train, torch.Tensor) and y_train.ndim == 2 and y_train.shape[1] == 1:
+                            # Prefer using model.train_inputs if available, else X_train
+                            train_inputs_for_set = None
+                            if hasattr(model, "train_inputs") and model.train_inputs is not None:
+                                m_in = model.train_inputs[0]
+                                train_inputs_for_set = m_in
+                            elif X_train is not None:
+                                train_inputs_for_set = X_train
+
+                            if train_inputs_for_set is not None:
+                                # set_train_data will delegate correctly on wrapped models
+                                try:
+                                    model.set_train_data(train_inputs_for_set, y_train.squeeze(-1), strict=False)
+                                    logger.debug("[SPS] Normalized model.train_targets from (N,1) -> (N,)")
+                                except Exception:
+                                    # If normalization fails, continue — SPS will still attempt posterior()
+                                    logger.debug("[SPS] Failed to normalize model.train_targets; continuing")
+                except Exception:
+                    # Any unexpected issue during normalization should not stop SPS
+                    logger.debug("[SPS] Exception during train_targets normalization; ignoring")
+
+                # 【修复】确保 skeleton_points 与模型 dtype/device 一致
+                # 优先从 X_train 获取, 否则从 model.train_inputs 获取
+                device = self.skeleton_points.device
+                dtype = self.skeleton_points.dtype
+
+                if X_train is not None:
+                    device = X_train.device
+                    dtype = X_train.dtype
+                elif hasattr(model, "train_inputs") and model.train_inputs is not None:
+                    # 尝试从模型输入获取
+                    try:
+                        m_input = model.train_inputs[0]
+                        if isinstance(m_input, tuple):
+                            m_input = m_input[0]
+                        device = m_input.device
+                        dtype = m_input.dtype
+                    except:
+                        pass
+
+                X_skeleton = self.skeleton_points.to(device=device, dtype=dtype)
+
                 # 强制重新计算 - 不使用observation_noise避免缓存
-                posterior = model.posterior(
-                    self.skeleton_points, observation_noise=False
-                )
+                posterior = model.posterior(X_skeleton, observation_noise=False)
                 current_predictions = (
                     posterior.mean.squeeze().detach().clone()
                 )  # Shape: (2*d + 1,)
@@ -202,17 +250,22 @@ class SPS_Tracker:
             if self.prev_predictions is None:
                 self.prev_predictions = current_predictions.clone()
                 self.r_t_smoothed = 1.0  # Assume fully unstable initially
-                logger.warning(
+                self._cached_r_t = 1.0
+                self._last_train_size = train_size
+                logger.debug(
                     f"[SPS] First call: train_size={train_size}, pred_mean={current_predictions.mean().item():.4f}, pred_std={current_predictions.std().item():.4f}"
                 )
                 return 1.0
 
             # Compute relative change
+            # 【修复】确保 prev_predictions 与 current_predictions dtype 一致
+            self.prev_predictions = self.prev_predictions.to(current_predictions)
+
             diff = current_predictions - self.prev_predictions
             delta_t = torch.norm(diff).item() / (
                 torch.norm(current_predictions).item() + EPS
             )
-            logger.warning(
+            logger.debug(
                 f"[SPS] train_size={train_size}, diff_norm={torch.norm(diff).item():.6f}, pred_norm={torch.norm(current_predictions).item():.4f}, delta_t={delta_t:.6f}"
             )
 
@@ -271,6 +324,7 @@ class DynamicWeightEngine:
         tau2: float = 0.20,
         lambda_min: float = 0.1,
         lambda_max: float = 1.0,
+        lambda_initial: Optional[float] = None,
         # 分段Lambda参数（新增）
         use_piecewise_lambda: bool = False,
         piecewise_phase1_end: int = 35,
@@ -324,6 +378,9 @@ class DynamicWeightEngine:
         self.tau2 = tau2
         self.lambda_min = lambda_min
         self.lambda_max = lambda_max
+        self.lambda_initial = (
+            None if lambda_initial is None else float(lambda_initial)
+        )
 
         # 分段Lambda配置
         self.use_piecewise_lambda = use_piecewise_lambda
@@ -385,10 +442,19 @@ class DynamicWeightEngine:
 
         # 状态缓存
         self._initial_param_vars: Optional[torch.Tensor] = None
-        self._current_lambda: float = lambda_max
-        self._current_gamma: float = gamma_initial
-        self._fitted: bool = False
-        self._n_train: int = 0
+        
+        # 【修复】初始 lambda 应遵循分段逻辑或最小值
+        if self.use_piecewise_lambda:
+            self._current_lambda = float(self.piecewise_lambda_low)
+        elif self.lambda_initial is not None:
+            self._current_lambda = float(self.lambda_initial)
+        else:
+            self._current_lambda = float(self.lambda_min)
+            
+        self._current_gamma = gamma_initial
+        self._fitted = False
+        self._n_train = 0
+        self._lambda_initial_train_size: Optional[int] = None
 
         # 旧方法（参数变化率）的状态缓存（仅当不使用SPS时需要）
         self._prev_core_params: Optional[torch.Tensor] = None
@@ -467,6 +533,9 @@ class DynamicWeightEngine:
             logger.debug(
                 f"[WeightEngine] n_train increased: {self._n_train} -> {n_train}, _params_need_update=True"
             )
+
+        if self.lambda_initial is not None and self._lambda_initial_train_size is None and n_train > 0:
+            self._lambda_initial_train_size = int(n_train)
 
         self._n_train = n_train
         self._fitted = fitted
@@ -757,6 +826,15 @@ class DynamicWeightEngine:
             self._current_lambda = float(lambda_t)
             return float(lambda_t)
 
+        if (
+            self.lambda_initial is not None
+            and self._lambda_initial_train_size is not None
+            and self._n_train == self._lambda_initial_train_size
+        ):
+            lambda_t = float(np.clip(self.lambda_initial, self.lambda_min, self.lambda_max))
+            self._current_lambda = lambda_t
+            return lambda_t
+
         # 【原有】r_t-based策略
         # 计算r_t: 优先使用SPS，回退到参数变化率
         if self.use_sps and self.sps_tracker is not None:
@@ -882,10 +960,19 @@ class DynamicWeightEngine:
                 "tau2": self.tau2,
                 "lambda_min": self.lambda_min,
                 "lambda_max": self.lambda_max,
+                "lambda_initial": self.lambda_initial,
+                "use_piecewise_lambda": self.use_piecewise_lambda,
+                "piecewise_phase1_end": self.piecewise_phase1_end,
+                "piecewise_phase2_end": self.piecewise_phase2_end,
+                "piecewise_lambda_low": self.piecewise_lambda_low,
+                "piecewise_lambda_high": self.piecewise_lambda_high,
                 "use_dynamic_gamma": self.use_dynamic_gamma,
                 "gamma_min": self.gamma_min,
                 "gamma_max": self.gamma_max,
                 "tau_n_min": self.tau_n_min,
                 "tau_n_max": self.tau_n_max,
+                "use_sps": self.use_sps,
+                "tau_safe": self.tau_safe,
+                "gamma_penalty_beta": self.gamma_penalty_beta,
             },
         }

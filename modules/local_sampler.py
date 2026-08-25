@@ -23,6 +23,18 @@ import warnings
 import numpy as np
 import torch
 
+# 导入全局subject context
+try:
+    from ..subject_context import get_current_subject_id
+except ImportError:
+    # 备用绝对导入
+    try:
+        from subject_context import get_current_subject_id
+    except ImportError:
+        # 如果都失败，定义一个dummy函数
+        def get_current_subject_id():
+            return None
+
 
 class LocalSampler:
     """混合变量类型局部扰动采样器
@@ -83,14 +95,35 @@ class LocalSampler:
         # local_num 初始化（可能在 update_data 中被自动计算覆盖）
         self.local_num = self._local_num_manual
 
-        # 【修复】使用实例级 RNG（避免全局污染）
-        # 参考：https://numpy.org/doc/stable/reference/random/generator.html
+        # 【修复】使用base_seed + subject_id（从全局context获取）
+        # 这样能保证：
+        # 1. 可复现性：相同subject_id + base_seed = 相同seed
+        # 2. 多样性：不同subject_id = 不同seed
+        # 3. 无需显式传递subject_id，自动从context读取
         if random_seed is not None:
             # Convert to int to handle config parsing floats (e.g., 42.0 -> 42)
             random_seed_int = int(random_seed)
-            self._np_rng = np.random.default_rng(random_seed_int)
-            # 同时设置 torch 随机种子（保证跨框架可复现）
-            torch.manual_seed(random_seed_int)
+            
+            # 尝试从全局context获取当前subject_id
+            subject_id = get_current_subject_id()
+            if subject_id is not None:
+                # 将subject_id混入seed
+                # 公式：effective_seed = (base_seed * 1000 + subject_id) % (2^31)
+                # 这样subject 1会得到不同的seed，subject 2又不同...
+                effective_seed = (random_seed_int + subject_id * 10000) % (2**31)
+                logger.debug(
+                    f"[LocalSampler] Using subject_id-based seed: "
+                    f"base_seed={random_seed_int}, subject_id={subject_id}, effective_seed={effective_seed}"
+                )
+            else:
+                # 如果没有设置subject_id（单subject场景或非继承场景），直接用base_seed
+                effective_seed = random_seed_int
+                logger.debug(
+                    f"[LocalSampler] No subject_id context, using base_seed={random_seed_int}"
+                )
+            
+            self._np_rng = np.random.default_rng(effective_seed)
+            torch.manual_seed(effective_seed)
         else:
             self._np_rng = np.random.default_rng()
 
@@ -321,16 +354,19 @@ class LocalSampler:
         # 【混合策略】判断是否使用穷举
         if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
             # ========== 穷举模式 ==========
+            # 【改进】即使穷举也要加入随机性：随机排列后再穷举
+            # 这样不同的acqf实例会探索不同的穷举序列
+            shuffled_vals = unique_vals.copy()
+            self._np_rng.shuffle(shuffled_vals)  # 随机排列穷举顺序
+            
             if self.exhaustive_use_cyclic_fill:
                 # 循环填充到local_num（均衡覆盖所有水平）
-                # 例如：3水平 + local_num=6 → [0,1,2,0,1,2]
                 n_repeats = (self.local_num // n_levels) + 1
-                samples = np.tile(unique_vals, (B, n_repeats))
+                samples = np.tile(shuffled_vals, (B, n_repeats))
                 samples = samples[:, : self.local_num]  # 裁剪到local_num
             else:
-                # 只生成n_levels个样本（不填充）
-                # 例如：3水平 → [0,1,2] （忽略local_num）
-                samples = np.tile(unique_vals, (B, 1))
+                # 只生成n_levels个样本
+                samples = np.tile(shuffled_vals, (B, 1))
 
             base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
@@ -362,14 +398,19 @@ class LocalSampler:
         # 【混合策略】判断是否使用穷举
         if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
             # ========== 穷举模式 ==========
+            # 【改进】即使穷举也要加入随机性：随机排列后再穷举
+            # 这样不同的acqf实例会探索不同的穷举序列
+            shuffled_vals = all_integers.copy()
+            self._np_rng.shuffle(shuffled_vals)  # 随机排列穷举顺序
+            
             if self.exhaustive_use_cyclic_fill:
                 # 循环填充到local_num
                 n_repeats = (self.local_num // n_levels) + 1
-                samples = np.tile(all_integers, (B, n_repeats))
+                samples = np.tile(shuffled_vals, (B, n_repeats))
                 samples = samples[:, : self.local_num]
             else:
                 # 只生成n_levels个样本
-                samples = np.tile(all_integers, (B, 1))
+                samples = np.tile(shuffled_vals, (B, 1))
 
             base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device
@@ -422,14 +463,19 @@ class LocalSampler:
         # 【混合策略】判断是否使用穷举
         if self.use_hybrid_perturbation and n_levels <= self.exhaustive_level_threshold:
             # ========== 穷举模式 ==========
+            # 【改进】即使穷举也要加入随机性：随机排列后再穷举
+            # 这样不同的acqf实例会探索不同的穷举序列
+            shuffled_vals = unique_vals.copy()
+            self._np_rng.shuffle(shuffled_vals)  # 随机排列穷举顺序
+
             if self.exhaustive_use_cyclic_fill:
                 # 循环填充到local_num
                 n_repeats = (self.local_num // n_levels) + 1
-                samples = np.tile(unique_vals, (B, n_repeats))
+                samples = np.tile(shuffled_vals, (B, n_repeats))
                 samples = samples[:, : self.local_num]
             else:
                 # 只生成n_levels个样本
-                samples = np.tile(unique_vals, (B, 1))
+                samples = np.tile(shuffled_vals, (B, 1))
 
             base[:, : samples.shape[1], k] = torch.from_numpy(samples).to(
                 dtype=base.dtype, device=base.device

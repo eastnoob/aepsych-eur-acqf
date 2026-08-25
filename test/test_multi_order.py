@@ -184,6 +184,49 @@ def test_config_parsing():
     print("✅ 测试通过！")
 
 
+def test_pairwise_defaults_to_all_pairs():
+    """测试：未显式指定 interaction_pairs 时自动生成所有二阶交互"""
+    from eur_anova_multi import EURAnovaMultiAcqf
+
+    model = create_mock_model(n_dims=4, n_train=10)
+    acqf = EURAnovaMultiAcqf(
+        model,
+        enable_main=True,
+        enable_pairwise=True,
+        enable_threeway=False,
+    )
+
+    X_candidates = torch.rand(3, 4, dtype=torch.float64)
+    _ = acqf(X_candidates.unsqueeze(1))
+    diag = acqf.get_diagnostics()
+
+    assert diag["n_pairs"] == 6
+    assert (0, 1) in diag["pairs"]
+    assert (2, 3) in diag["pairs"]
+
+
+def test_lambda_2_init_is_used_before_dynamic_updates():
+    """测试：lambda_2_init 在首个训练规模阶段作为初始动态权重生效"""
+    from eur_anova_multi import EURAnovaMultiAcqf
+
+    model = create_mock_model(n_dims=4, n_train=10)
+    acqf = EURAnovaMultiAcqf(
+        model,
+        enable_main=True,
+        enable_pairwise=True,
+        enable_threeway=False,
+        lambda_2_init=0.6,
+        lambda_min=0.1,
+        lambda_max=1.0,
+    )
+
+    X_candidates = torch.rand(2, 4, dtype=torch.float64)
+    _ = acqf(X_candidates.unsqueeze(1))
+    diag = acqf.get_diagnostics()
+
+    assert abs(diag["lambda_2"] - 0.6) < 1e-8
+
+
 def test_anova_engine_independently():
     """测试：ANOVA引擎独立性"""
     print("\n" + "=" * 70)

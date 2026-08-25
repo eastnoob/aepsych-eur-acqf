@@ -37,6 +37,7 @@ class DiagnosticsManager:
         self.enabled = enabled
         self.verbose_mode = verbose_mode
         self.output_file = Path(output_file) if output_file else None
+        self.history = []
 
         # last-seen effect tensors (kept on CPU)
         self._last_main: Optional[torch.Tensor] = None
@@ -102,17 +103,20 @@ class DiagnosticsManager:
         config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Return a diagnostics dictionary ready for logging or writing."""
-        diag: Dict[str, Any] = {
+        # 1. 先从配置初始化（静态参数）
+        diag: Dict[str, Any] = {}
+        if config is not None:
+            diag.update(config)
+
+        # 2. 用运行时动态值覆盖（确保诊断信息反映当前真实状态）
+        diag.update({
             "lambda_t": lambda_t,
             "lambda_2": lambda_2 if lambda_2 is not None else lambda_t,
             "lambda_3": lambda_3 if lambda_3 is not None else 0.0,
             "gamma_t": gamma_t,
             "n_train": n_train,
             "fitted": fitted,
-        }
-
-        if config is not None:
-            diag.update(config)
+        })
 
         if self._last_main is not None:
             diag["main_effects_sum"] = self._last_main
@@ -135,20 +139,35 @@ class DiagnosticsManager:
           (including array summaries) are emitted and, if `output_file`
           is set, a full dump is written to that file (timestamped).
         """
+        # Store in history for table view
+        n_train = diag.get("n_train", 0)
+        r_t = diag.get("r_t", None)
+        lambda2 = diag.get("lambda_2", diag.get("lambda_t", 0.0))
+        gamma = diag.get("gamma_t", 0.0)
+        fitted = diag.get("fitted", False)
+
+        # Only add if n_train is new or history is empty
+        if not self.history or self.history[-1]["n"] != n_train:
+            self.history.append(
+                {
+                    "n": n_train,
+                    "r_t": r_t,
+                    "λ_2": lambda2,
+                    "γ": gamma,
+                    "fitted": fitted,
+                }
+            )
+
         if not self.enabled and not verbose and not self.verbose_mode:
             return
 
         try:
-            lambda2 = diag.get("lambda_2", diag.get("lambda_t", 0.0))
-            gamma = diag.get("gamma_t", 0.0)
-            n_train = diag.get("n_train", 0)
-            fitted = diag.get("fitted", False)
-            summary = f"[EUR] n_train={n_train} fitted={int(bool(fitted))} lambda_2={lambda2:.3f} gamma={gamma:.3f}"
+            summary = f"[EUR] Trial {n_train:2d} | r_t={ (f'{r_t:.3f}') if r_t is not None else 'N/A':5s} | λ_2={lambda2:.3f} | γ={gamma:.3f} | fitted={int(bool(fitted))}"
         except Exception:
             summary = "[EUR] diagnostics summary unavailable"
 
         if self.enabled:
-            logger.info(summary)
+            logger.debug(summary)
 
         if verbose or self.verbose_mode:
             logger.debug("--- EUR Detailed Diagnostics BEGIN ---")
@@ -193,31 +212,31 @@ class DiagnosticsManager:
 
             logger.debug("--- EUR Detailed Diagnostics END ---")
 
-        # Human-friendly effect summaries at INFO when enabled
+        # Human-friendly effect summaries at DEBUG when enabled
         if "main_effects_sum" in diag:
             main = diag["main_effects_sum"]
-            logger.info("\n【效应贡献】(最后一次 forward() 调用)")
-            logger.info(f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}")
+            logger.debug("\n【效应贡献】(最后一次 forward() 调用)")
+            logger.debug(f"  主效应总和: mean={main.mean():.4f}, std={main.std():.4f}")
 
             if "pair_effects_sum" in diag:
                 pair = diag["pair_effects_sum"]
-                logger.info(
+                logger.debug(
                     f"  二阶交互总和: mean={pair.mean():.4f}, std={pair.std():.4f}"
                 )
 
             if "triplet_effects_sum" in diag:
                 triplet = diag["triplet_effects_sum"]
-                logger.info(
+                logger.debug(
                     f"  三阶交互总和: mean={triplet.mean():.4f}, std={triplet.std():.4f}"
                 )
 
             if "info_raw" in diag:
                 info = diag["info_raw"]
-                logger.info(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
+                logger.debug(f"  信息项: mean={info.mean():.4f}, std={info.std():.4f}")
 
             if "coverage" in diag:
                 cov = diag["coverage"]
-                logger.info(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
+                logger.debug(f"  覆盖项: mean={cov.mean():.4f}, std={cov.std():.4f}")
 
             if verbose:
                 logger.debug(f"\n  主效应数组:\n    {main}")
@@ -230,4 +249,17 @@ class DiagnosticsManager:
                 "\n⚠️  效应贡献数据不可用 - 提示: 初始化时设置 debug_components=True"
             )
 
-        logger.info("=" * 70 + "\n")
+    def save_history_csv(self, path: str | Path) -> None:
+        """Save the weight history to a CSV file."""
+        if not self.history:
+            return
+            
+        import pandas as pd
+        try:
+            df = pd.DataFrame(self.history)
+            # Rename columns for clarity in CSV
+            df.columns = ['trial', 'r_t', 'lambda_2', 'gamma', 'fitted']
+            df.to_csv(path, index=False)
+            logger.info(f"[EUR] Saved weight history to {path}")
+        except Exception as e:
+            logger.error(f"[EUR] Failed to save history to {path}: {e}")
